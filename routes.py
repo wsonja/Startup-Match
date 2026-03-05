@@ -1,32 +1,35 @@
-import json
 from flask import send_from_directory, request, jsonify
-from models import db, Episode, Review
+from models import db, Startup
 import os
 
-# Search function
-def json_search(query):
-    # Query episodes with matching title and join with reviews
-    results = db.session.query(Episode, Review).join(
-        Review, Episode.id == Review.id
-    ).filter(
-        Episode.title.ilike(f'%{query}%')
-    ).all()
-    
-    # Convert results to JSON format
-    matches = []
-    for episode, review in results:
-        matches.append({
-            'title': episode.title,
-            'descr': episode.descr,
-            'imdb_rating': review.imdb_rating
-        })
-    
-    return matches
+def startup_search(query: str):
+    q = (query or "").strip()
+    if q == "":
+        return []
+
+    results = Startup.query.filter(
+        db.or_(
+            Startup.name.ilike(f"%{q}%"),
+            Startup.description.ilike(f"%{q}%"),
+            Startup.tags.ilike(f"%{q}%"),
+            Startup.stage.ilike(f"%{q}%")
+        )
+    ).limit(50).all()
+
+    return [
+        {
+            "id": s.id,
+            "name": s.name,
+            "stage": s.stage,
+            "description": s.description,
+            "tags": s.tags,
+            "url": s.url
+        }
+        for s in results
+    ]
 
 def register_routes(app):
-    """Register all routes with the Flask app"""
-    
-    # Serve React App
+    # Serve React App (same as before)
     @app.route('/', defaults={'path': ''})
     @app.route('/<path:path>')
     def serve(path):
@@ -35,9 +38,8 @@ def register_routes(app):
         else:
             return send_from_directory(app.static_folder, 'index.html')
 
-    # API Routes
-    @app.route("/api/episodes")
-    def episodes_search():
-        text = request.args.get("title", "")
-        results = json_search(text)
-        return jsonify(results)
+    # API route: startups search
+    @app.route("/api/startups/search")
+    def startups_search():
+        q = request.args.get("q", "")
+        return jsonify(startup_search(q))
