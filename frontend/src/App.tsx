@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import { Startup } from './types'
+import logo from './assets/logo.png'
+import logoMark from './assets/logo-mark.png'
 
 function App(): JSX.Element {
   const [searchTerm, setSearchTerm] = useState<string>('')
@@ -127,7 +129,7 @@ function App(): JSX.Element {
         <div className="floating-nav-inner">
           <div className="nav-brand">
             <div className="nav-brand-mark"><img
-              src="src/assets/logo-mark.png"
+              src={logoMark}
               alt="StartupMatch logo mark"
               className="nav-brand-mark"
             /></div>
@@ -143,7 +145,7 @@ function App(): JSX.Element {
         <div className="hero-inner">
           <div className="hero-logo-wrap">
             <img
-              src="src/assets/logo.png"
+              src={logo}
               alt="StartupMatch logo"
               className="hero-logo"
             />
