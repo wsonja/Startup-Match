@@ -1,0 +1,108 @@
+{
+  "startups": [
+    {
+      "id": 1,
+      "name": "VectorFlow",
+      "stage": "YC",
+      "yc_batch": "W24",
+      "industry": "AI Infrastructure",
+      "location": "San Francisco, CA",
+      "description": "Builds tooling for vector search, retrieval pipelines, and LLM application infrastructure for engineering teams.",
+      "tech_stack": ["Python", "FastAPI", "React", "PostgreSQL", "Docker"],
+      "roles": ["Software Engineering Intern", "ML Engineer Intern", "Frontend Engineer Intern"],
+      "keywords": ["python", "llm", "nlp", "retrieval", "rag", "react", "backend", "ml"],
+      "url": "https://example.com/vectorflow"
+    },
+    {
+      "id": 2,
+      "name": "MedAtlas",
+      "stage": "Series A",
+      "yc_batch": null,
+      "industry": "Healthtech",
+      "location": "New York, NY",
+      "description": "Develops data-driven software for hospital workflow optimization and clinical analytics.",
+      "tech_stack": ["Python", "SQL", "Tableau", "AWS", "React"],
+      "roles": ["Data Analyst Intern", "Product Analyst", "Full Stack Intern"],
+      "keywords": ["data analysis", "sql", "healthcare", "dashboard", "analytics", "react", "python"],
+      "url": "https://example.com/medatlas"
+    },
+    {
+      "id": 3,
+      "name": "FinPilot",
+      "stage": "Series B",
+      "yc_batch": null,
+      "industry": "Fintech",
+      "location": "Chicago, IL",
+      "description": "Provides workflow automation and analytics infrastructure for mid-market financial teams.",
+      "tech_stack": ["Java", "Spring Boot", "React", "MySQL", "GCP"],
+      "roles": ["Backend Engineer Intern", "Full Stack Engineer", "Product Operations Intern"],
+      "keywords": ["finance", "backend", "java", "spring", "react", "analytics", "product"],
+      "url": "https://example.com/finpilot"
+    },
+    {
+      "id": 4,
+      "name": "CampusGraph",
+      "stage": "YC",
+      "yc_batch": "S23",
+      "industry": "Edtech",
+      "location": "Remote",
+      "description": "Builds tools for academic planning, student matching, and personalized recommendation systems.",
+      "tech_stack": ["Python", "TypeScript", "Node.js", "React", "MongoDB"],
+      "roles": ["Software Engineer Intern", "Recommendation Systems Intern"],
+      "keywords": ["matching", "recommendation", "student", "typescript", "react", "python", "search"],
+      "url": "https://example.com/campusgraph"
+    },
+    {
+      "id": 5,
+      "name": "VisionForge",
+      "stage": "Series A",
+      "yc_batch": null,
+      "industry": "Computer Vision",
+      "location": "Boston, MA",
+      "description": "Creates vision models and edge deployment pipelines for robotics and industrial inspection.",
+      "tech_stack": ["Python", "PyTorch", "C++", "CUDA", "OpenCV"],
+      "roles": ["Computer Vision Intern", "ML Infrastructure Intern", "Robotics Software Intern"],
+      "keywords": ["computer vision", "pytorch", "c++", "opencv", "robotics", "ml", "edge"],
+      "url": "https://example.com/visionforge"
+    },
+    {
+      "id": 6,
+      "name": "ScaleDB",
+      "stage": "Series B",
+      "yc_batch": null,
+      "industry": "Developer Tools",
+      "location": "Seattle, WA",
+      "description": "Offers distributed database tooling and observability software for fast-growing engineering teams.",
+      "tech_stack": ["Go", "Kubernetes", "TypeScript", "React", "Redis"],
+      "roles": ["Backend Infrastructure Intern", "Distributed Systems Intern"],
+      "keywords": ["distributed systems", "backend", "go", "kubernetes", "infra", "databases"],
+      "url": "https://example.com/scaledb"
+    },
+    {
+      "id": 7,
+      "name": "PromptShield",
+      "stage": "YC",
+      "yc_batch": "F24",
+      "industry": "AI Safety",
+      "location": "San Francisco, CA",
+      "description": "Builds prompt monitoring, evaluation, and security tooling for enterprise generative AI systems.",
+      "tech_stack": ["Python", "FastAPI", "Vue", "AWS", "LangChain"],
+      "roles": ["AI Engineer Intern", "Security Research Intern"],
+      "keywords": ["llm", "ai safety", "evaluation", "prompting", "python", "security", "nlp"],
+      "url": "https://example.com/promptshield"
+    },
+    {
+      "id": 8,
+      "name": "RetailBrain",
+      "stage": "Series A",
+      "yc_batch": null,
+      "industry": "Retail Analytics",
+      "location": "Austin, TX",
+      "description": "Uses forecasting and recommendation models to help retailers manage inventory and customer personalization.",
+      "tech_stack": ["Python", "Pandas", "SQL", "scikit-learn", "Looker"],
+      "roles": ["Data Science Intern", "Analytics Engineer Intern"],
+      "keywords": ["forecasting", "recommendation", "data science", "python", "sql", "analytics"],
+      "url": "https://example.com/retailbrain"
+    }
+  ]
+}

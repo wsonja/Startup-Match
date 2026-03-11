@@ -1,6 +1,14 @@
-﻿Flask==2.2.5
+Flask==2.2.5
 Flask-Cors==3.0.10
 Flask-SQLAlchemy==3.1.1
 SQLAlchemy==2.0.36
 Werkzeug==2.2.2
 gunicorn
+python-dotenv
+easyocr
+requests
+beautifulsoup4
+scikit-learn
+pandas
+git+https://github.com/MrPeterss/infosci-spark-client.git
+easyocr
