@@ -10,22 +10,26 @@ The project uses an already-prepared enriched startup dataset committed to the r
 - AI Company & Startup Funding Database https://www.kaggle.com/datasets/prajitdatta/ai-company-and-startup-funding-database
 
 
-## Run Locally
-
-### 1. Clone the repo
+Clone the repo
 git clone &lt;your-repo-url&gt;
 cd STARTUP-MATCH
 
-### 2. Start the Flask backend
-python app.py
+## Run Locally
+# 1. Set up Python virtual environment
+python3 -m venv venv
+source venv/bin/activate
 
-The backend runs at:
-http://localhost:5001
+# 2. Install Python dependencies
+pip install -r requirements.txt
 
-### 3. Start the React frontend
+# 3. Start Flask backend (in one terminal)
+python src/app.py
+
+# 4. In a NEW terminal, install and start React
 cd frontend
 npm install
 npm run dev
+
 
 The frontend runs at:
 http://localhost:5173
