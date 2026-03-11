@@ -1,10 +1,3 @@
-/**
- * Chat component — only rendered when USE_LLM = True in routes.py.
- *
- * Shows a message history and a chat input bar at the bottom.
- * When the backend returns a search_term event, it calls onSearchTerm
- * to update the search bar and results above.
- */
 import { useState, useRef, useEffect } from 'react'
 import SearchIcon from './assets/mag.png'
 
@@ -37,6 +30,8 @@ function Chat({ onSearchTerm }: ChatProps): JSX.Element {
     setLoading(true)
 
     try {
+      onSearchTerm(text)
+
       const response = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -64,22 +59,30 @@ function Chat({ onSearchTerm }: ChatProps): JSX.Element {
         buffer += decoder.decode(value, { stream: true })
         const lines = buffer.split('\n')
         buffer = lines.pop() ?? ''
+
         for (const line of lines) {
           if (line.startsWith('data: ')) {
             try {
               const data = JSON.parse(line.slice(6))
-              if (data.search_term !== undefined) {
-                onSearchTerm(data.search_term)
-              }
+
               if (data.error) {
-                setMessages(prev => [...prev.slice(0, -1), { text: 'Error: ' + data.error, isUser: false }])
+                setMessages(prev => [
+                  ...prev.slice(0, -1),
+                  { text: 'Error: ' + data.error, isUser: false }
+                ])
                 return
               }
+
               if (data.content !== undefined) {
                 assistantText += data.content
-                setMessages(prev => [...prev.slice(0, -1), { text: assistantText, isUser: false }])
+                setMessages(prev => [
+                  ...prev.slice(0, -1),
+                  { text: assistantText, isUser: false }
+                ])
               }
-            } catch { /* ignore malformed lines */ }
+            } catch {
+              // ignore malformed lines
+            }
           }
         }
       }
@@ -112,7 +115,7 @@ function Chat({ onSearchTerm }: ChatProps): JSX.Element {
           <img src={SearchIcon} alt="" />
           <input
             type="text"
-            placeholder="Ask the AI about Keeping Up with the Kardashians"
+            placeholder="Ask StartupMatch for personalized startup recommendations"
             value={input}
             onChange={e => setInput(e.target.value)}
             disabled={loading}
