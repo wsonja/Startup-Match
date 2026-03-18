@@ -115,19 +115,23 @@ def extract_matched_terms(query, company):
 
     return matched
 
-def rank_companies(query, companies, top_k=20):
-    if not query or not query.strip():
+def rank_companies(skills_query, experience_query, interests_query, companies, top_k=20):
+    if not skills_query and not experience_query and not interests_query:
         return []
 
     company_fields = [get_company_fields(company) for company in companies]
 
-    name_docs = [cf["name"] for cf in company_fields]
-    desc_docs = [cf["description"] for cf in company_fields]
-    tags_docs = [cf["tags"] for cf in company_fields]
-    tech_docs = [cf["tech_stack"] for cf in company_fields]
+    skills_docs = [cf["tech_stack"] for cf in company_fields]
     roles_docs = [cf["roles"] for cf in company_fields]
+    context_docs = [
+        " ".join([cf["description"], cf["tags"]]).strip()
+        for cf in company_fields
+    ]
 
-    def cosine_scores(docs):
+    def cosine_scores(query, docs):
+        if not query or not query.strip():
+            return [0.0] * len(docs)
+
         corpus = [query] + docs
         vectorizer = TfidfVectorizer(
             lowercase=True,
@@ -138,23 +142,34 @@ def rank_companies(query, companies, top_k=20):
         matrix = vectorizer.fit_transform(corpus)
         return cosine_similarity(matrix[0:1], matrix[1:]).flatten()
 
-    name_sims = cosine_scores(name_docs)
-    desc_sims = cosine_scores(desc_docs)
-    tags_sims = cosine_scores(tags_docs)
-    tech_sims = cosine_scores(tech_docs)
-    roles_sims = cosine_scores(roles_docs)
+    skills_sims = cosine_scores(skills_query, skills_docs)
+    roles_sims = cosine_scores(experience_query, roles_docs)
+    context_sims = cosine_scores(interests_query, context_docs)
 
     ranked = []
     for i, company in enumerate(companies):
-        final_score = (
-            0.1 * name_sims[i] +
-            0.4 * desc_sims[i] +
-            1.2 * tags_sims[i] +
-            3.0 * tech_sims[i] +
-            2.0 * roles_sims[i]
-        )
+        score_sum = 0.0
+        weight_sum = 0.0
+
+        if skills_query:
+            score_sum += 3.0 * skills_sims[i]
+            weight_sum += 3.0
+
+        if experience_query:
+            score_sum += 2.0 * roles_sims[i]
+            weight_sum += 2.0
+
+        if interests_query:
+            score_sum += 1.0 * context_sims[i]
+            weight_sum += 1.0
+
+        final_score = (score_sum / weight_sum) if weight_sum > 0 else 0.0
 
         if final_score > 0:
+            combined_query = " ".join(
+                part for part in [skills_query, experience_query, interests_query] if part.strip()
+            )
+
             ranked.append({
                 "name": company.get("canonical_name"),
                 "stage": company.get("yc_batch") or company.get("funding_summary", {}).get("latest_round_type"),
@@ -169,8 +184,8 @@ def rank_companies(query, companies, top_k=20):
                 "roles": company.get("inferred_roles", []),
                 "keywords": company.get("tags", []) + company.get("categories", []),
                 "url": company.get("website"),
-                "match_score": round(final_score, 2),
-                "matched_terms": extract_matched_terms(query, company)
+                "match_score": round(final_score * 100, 2),
+                "matched_terms": extract_matched_terms(combined_query, company)
             })
 
     ranked.sort(key=lambda x: x["match_score"], reverse=True)
@@ -248,8 +263,10 @@ def register_routes(app):
 
     @app.route("/api/startups")
     def startups_search():
-        text = request.args.get("query", "")
-        return jsonify(rank_companies(text, COMPANIES))
+        skills = request.args.get("skills", "").strip()
+        experience = request.args.get("experience", "").strip()
+        interests = request.args.get("interests", "").strip()
+        return jsonify(rank_companies(skills, experience, interests, COMPANIES))
 
     @app.route("/api/parse-skills-image", methods=["POST"])
     def parse_skills_image():

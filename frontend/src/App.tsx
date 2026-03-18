@@ -5,7 +5,10 @@ import logo from './assets/logo.png'
 import logoMark from './assets/logo-mark.png'
 
 function App(): JSX.Element {
-  const [searchTerm, setSearchTerm] = useState<string>('')
+  const [skills, setSkills] = useState<string>('')
+  const [experience, setExperience] = useState<string>('')
+  const [interests, setInterests] = useState<string>('')
+  const [showAdvanced, setShowAdvanced] = useState<boolean>(false)
   const [startups, setStartups] = useState<Startup[]>([])
   const [navOpacity, setNavOpacity] = useState<number>(0)
   const [mouse, setMouse] = useState({ x: 50, y: 35 })
@@ -42,15 +45,34 @@ function App(): JSX.Element {
     }
   }, [])
 
-  const handleSearch = async (value: string): Promise<void> => {
-    setSearchTerm(value)
+  const handleSearch = async (
+    nextSkills: string,
+    nextExperience?: string,
+    nextInterests?: string
+  ): Promise<void> => {
+    const skillsValue = nextSkills
+    const experienceValue = nextExperience ?? experience
+    const interestsValue = nextInterests ?? interests
 
-    if (value.trim() === '') {
+    setSkills(skillsValue)
+    if (nextExperience !== undefined) setExperience(nextExperience)
+    if (nextInterests !== undefined) setInterests(nextInterests)
+
+    if (
+      skillsValue.trim() === '' &&
+      experienceValue.trim() === '' &&
+      interestsValue.trim() === ''
+    ) {
       setStartups([])
       return
     }
 
-    const response = await fetch(`/api/startups?query=${encodeURIComponent(value)}`)
+    const params = new URLSearchParams()
+    if (skillsValue.trim()) params.append('skills', skillsValue)
+    if (experienceValue.trim()) params.append('experience', experienceValue)
+    if (interestsValue.trim()) params.append('interests', interestsValue)
+
+    const response = await fetch(`/api/startups?${params.toString()}`)
     const data: Startup[] = await response.json()
     setStartups(data)
   }
@@ -82,14 +104,10 @@ function App(): JSX.Element {
       }
 
       const extractedSkills = data.skills?.join(', ') || ''
-      setSearchTerm(extractedSkills)
+      setSkills(extractedSkills)
 
       if (extractedSkills.trim() !== '') {
-        const searchResponse = await fetch(
-          `/api/startups?query=${encodeURIComponent(extractedSkills)}`
-        )
-        const searchData: Startup[] = await searchResponse.json()
-        setStartups(searchData)
+        await handleSearch(extractedSkills, experience, interests)
       }
     } catch (error) {
       console.error('Upload error:', error)
@@ -164,8 +182,7 @@ function App(): JSX.Element {
             <p className="eyebrow">Student to startup matching</p>
             <h1>Find early-stage startups that actually fit your skills</h1>
             <p className="intro-text">
-              Match students to YC-backed, Series A, and Series B startups based on skills,
-              interests, and experience.
+              Enter skills directly, and optionally add experience and interests for more targeted startup matches.
             </p>
           </div>
 
@@ -174,8 +191,8 @@ function App(): JSX.Element {
 
             <input
               id="search-input"
-              placeholder="Python, React, NLP, data analysis, worked on LLM projects..."
-              value={searchTerm}
+              placeholder="Skills: Python, React, NLP, SQL..."
+              value={skills}
               onChange={(e) => handleSearch(e.target.value)}
             />
 
@@ -197,6 +214,30 @@ function App(): JSX.Element {
             </button>
           </div>
 
+          <button
+            type="button"
+            className="advanced-toggle"
+            onClick={() => setShowAdvanced((prev) => !prev)}
+          >
+            {showAdvanced ? 'Hide optional fields' : 'Add experience and interests'}
+          </button>
+
+          {showAdvanced && (
+            <div className="advanced-fields">
+              <textarea
+                className="advanced-input"
+                placeholder="Experience (optional): built a React app, worked on backend APIs, ML project..."
+                value={experience}
+                onChange={(e) => handleSearch(skills, e.target.value, interests)}
+              />
+              <textarea
+                className="advanced-input"
+                placeholder="Interests (optional): fintech, healthtech, developer tools, AI infrastructure..."
+                value={interests}
+                onChange={(e) => handleSearch(skills, experience, e.target.value)}
+              />
+            </div>
+          )}
           {uploadedFileName && (
             <p className="upload-status">
               {uploading ? `Parsing ${uploadedFileName}...` : `Uploaded: ${uploadedFileName}`}
@@ -205,7 +246,10 @@ function App(): JSX.Element {
         </section>
 
         <section className="results-grid">
-          {startups.length === 0 && searchTerm.trim() === '' && (
+          {startups.length === 0 &&
+            skills.trim() === '' &&
+            experience.trim() === '' &&
+            interests.trim() === '' && (
             <div className="glass-card empty-state">
               <h2>Start with your profile</h2>
               <p>

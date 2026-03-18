@@ -493,3 +493,33 @@ input {
   font-size: 0.95rem;
 }
 
+
+.advanced-toggle {
+  margin-top: 12px;
+  border: none;
+  background: transparent;
+  color: var(--accent);
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  padding: 0;
+}
+
+.advanced-fields {
+  display: grid;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.advanced-input {
+  width: 100%;
+  min-height: 96px;
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  background: rgba(255, 255, 255, 0.56);
+  border-radius: 18px;
+  padding: 14px 16px;
+  resize: vertical;
+  outline: none;
+  font: inherit;
+  color: var(--text);
+}
