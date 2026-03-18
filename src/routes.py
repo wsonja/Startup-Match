@@ -1,6 +1,8 @@
+import json
 import os
 from flask import send_from_directory, request, jsonify
-from models import Startup
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
 try:
     import easyocr
@@ -12,8 +14,6 @@ except ImportError:
 from werkzeug.utils import secure_filename
 
 USE_LLM = False
-# USE_LLM = True
-
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
 
 KNOWN_SKILLS = {
@@ -23,10 +23,158 @@ KNOWN_SKILLS = {
     "machine learning", "deep learning", "nlp", "llm", "data analysis",
     "pandas", "numpy", "scikit-learn", "opencv", "html", "css", "git",
     "backend", "frontend", "data structures", "algorithms", "linux", "bash",
-    "typescript", "java", "r", "matlab"
+    "r", "matlab"
 }
 
 reader = None
+
+
+def load_companies():
+    current_directory = os.path.dirname(os.path.abspath(__file__))
+    json_file_path = os.path.join(current_directory, "enriched_init.json")
+    with open(json_file_path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    return data["companies"]
+
+
+COMPANIES = load_companies()
+
+
+def build_company_document(company):
+    if company.get("retrieval_document"):
+        return company["retrieval_document"]
+
+    pieces = [
+        company.get("canonical_name", ""),
+        company.get("short_description", ""),
+        company.get("long_description", ""),
+        " ".join(company.get("tags", []) or []),
+        " ".join(company.get("categories", []) or []),
+        company.get("sector", "") or "",
+        company.get("subsector", "") or "",
+        company.get("location", "") or "",
+        company.get("city", "") or "",
+        company.get("state", "") or "",
+        company.get("country", "") or "",
+        " ".join(company.get("aggregated_skills", []) or []),
+    ]
+    return " ".join([p for p in pieces if p]).strip()
+
+def normalize_text_list(items):
+    return " ".join(str(x) for x in (items or []) if x)
+
+
+def get_company_fields(company):
+    return {
+        "name": company.get("canonical_name", "") or "",
+        "description": " ".join([
+            company.get("short_description", "") or "",
+            company.get("long_description", "") or "",
+        ]).strip(),
+        "tags": " ".join([
+            normalize_text_list(company.get("tags", [])),
+            normalize_text_list(company.get("categories", [])),
+            company.get("sector", "") or "",
+            company.get("subsector", "") or "",
+            company.get("location", "") or "",
+            company.get("city", "") or "",
+            company.get("state", "") or "",
+            company.get("country", "") or "",
+        ]).strip(),
+        "tech_stack": normalize_text_list(company.get("aggregated_skills", [])),
+        "roles": normalize_text_list(company.get("inferred_roles", [])),
+    }
+
+def extract_matched_terms(query, company):
+    query_lower = (query or "").lower().strip()
+    query_terms = query_lower.split()
+
+    searchable_parts = [
+        company.get("canonical_name", ""),
+        company.get("short_description", ""),
+        company.get("long_description", ""),
+        " ".join(company.get("tags", []) or []),
+        " ".join(company.get("categories", []) or []),
+        company.get("sector", ""),
+        company.get("subsector", ""),
+        company.get("location", ""),
+        company.get("country", ""),
+        " ".join(company.get("aggregated_skills", []) or []),
+    ]
+
+    searchable_text = " ".join(str(part or "") for part in searchable_parts).lower()
+
+    matched = []
+
+    if query_lower and query_lower in searchable_text:
+        matched.append(query_lower)
+
+    for term in query_terms:
+        if term in searchable_text and term not in matched:
+            matched.append(term)
+
+    return matched
+
+def rank_companies(query, companies, top_k=20):
+    if not query or not query.strip():
+        return []
+
+    company_fields = [get_company_fields(company) for company in companies]
+
+    name_docs = [cf["name"] for cf in company_fields]
+    desc_docs = [cf["description"] for cf in company_fields]
+    tags_docs = [cf["tags"] for cf in company_fields]
+    tech_docs = [cf["tech_stack"] for cf in company_fields]
+    roles_docs = [cf["roles"] for cf in company_fields]
+
+    def cosine_scores(docs):
+        corpus = [query] + docs
+        vectorizer = TfidfVectorizer(
+            lowercase=True,
+            stop_words="english",
+            ngram_range=(1, 2),
+            min_df=1
+        )
+        matrix = vectorizer.fit_transform(corpus)
+        return cosine_similarity(matrix[0:1], matrix[1:]).flatten()
+
+    name_sims = cosine_scores(name_docs)
+    desc_sims = cosine_scores(desc_docs)
+    tags_sims = cosine_scores(tags_docs)
+    tech_sims = cosine_scores(tech_docs)
+    roles_sims = cosine_scores(roles_docs)
+
+    ranked = []
+    for i, company in enumerate(companies):
+        final_score = (
+            0.1 * name_sims[i] +
+            0.4 * desc_sims[i] +
+            1.2 * tags_sims[i] +
+            3.0 * tech_sims[i] +
+            2.0 * roles_sims[i]
+        )
+
+        if final_score > 0:
+            ranked.append({
+                "name": company.get("canonical_name"),
+                "stage": company.get("yc_batch") or company.get("funding_summary", {}).get("latest_round_type"),
+                "yc_batch": company.get("yc_batch"),
+                "industry": (
+                    company.get("sector")
+                    or (company.get("tags")[0] if company.get("tags") else None)
+                ),
+                "location": company.get("location"),
+                "description": company.get("short_description") or company.get("long_description"),
+                "tech_stack": company.get("aggregated_skills", []),
+                "roles": company.get("inferred_roles", []),
+                "keywords": company.get("tags", []) + company.get("categories", []),
+                "url": company.get("website"),
+                "match_score": round(final_score, 2),
+                "matched_terms": extract_matched_terms(query, company)
+            })
+
+    ranked.sort(key=lambda x: x["match_score"], reverse=True)
+    return ranked[:top_k]
 
 
 def get_easyocr_reader():
@@ -41,7 +189,7 @@ def get_easyocr_reader():
         except Exception as e:
             raise RuntimeError(
                 "Failed to initialize easyocr: {}. "
-                "On macOS run /Applications/Python\ x.x/Install\ Certificates.command or configure CI certificates."
+                "On macOS run /Applications/Python\\ x.x/Install\\ Certificates.command or configure CI certificates."
                 .format(e)
             ) from e
 
@@ -82,62 +230,6 @@ def extract_text_from_image(image_path):
     return " ".join(results)
 
 
-def score_startup(startup, query):
-    query_terms = set(query.lower().split())
-
-    searchable_text = " ".join([
-        startup.name or "",
-        startup.stage or "",
-        startup.yc_batch or "",
-        startup.industry or "",
-        startup.location or "",
-        startup.description or "",
-        startup.tech_stack or "",
-        startup.roles or "",
-        startup.keywords or ""
-    ]).lower()
-
-    score = 0
-    matched_terms = []
-
-    for term in query_terms:
-        if term in searchable_text:
-            score += 1
-            matched_terms.append(term)
-
-    return score, matched_terms
-
-
-def json_search(query):
-    if not query or not query.strip():
-        return []
-
-    startups = Startup.query.all()
-    matches = []
-
-    for startup in startups:
-        score, matched_terms = score_startup(startup, query)
-        if score > 0:
-            matches.append({
-                "id": startup.id,
-                "name": startup.name,
-                "stage": startup.stage,
-                "yc_batch": startup.yc_batch,
-                "industry": startup.industry,
-                "location": startup.location,
-                "description": startup.description,
-                "tech_stack": startup.tech_stack.split(", "),
-                "roles": startup.roles.split(", "),
-                "keywords": startup.keywords.split(", "),
-                "url": startup.url,
-                "match_score": score,
-                "matched_terms": matched_terms
-            })
-
-    matches.sort(key=lambda x: x["match_score"], reverse=True)
-    return matches
-
-
 def register_routes(app):
     upload_folder = os.path.join(os.getcwd(), "uploads")
     os.makedirs(upload_folder, exist_ok=True)
@@ -157,7 +249,7 @@ def register_routes(app):
     @app.route("/api/startups")
     def startups_search():
         text = request.args.get("query", "")
-        return jsonify(json_search(text))
+        return jsonify(rank_companies(text, COMPANIES))
 
     @app.route("/api/parse-skills-image", methods=["POST"])
     def parse_skills_image():
@@ -188,7 +280,3 @@ def register_routes(app):
             return jsonify({"error": str(e)}), 503
         except Exception as e:
             return jsonify({"error": f"Failed to parse image: {str(e)}"}), 500
-
-    if USE_LLM:
-        from llm_routes import register_chat_route
-        register_chat_route(app, json_search)

@@ -219,7 +219,7 @@ function App(): JSX.Element {
             <article key={startup.id} className="glass-card startup-card">
               <div className="card-top">
                 <h3>{startup.name}</h3>
-                <div className="score-pill">Match {startup.match_score}</div>
+                <div className="score-pill">Match {startup.match_score}%</div>
               </div>
 
               <div className="meta-row">
@@ -231,23 +231,28 @@ function App(): JSX.Element {
 
               <p className="startup-description">{startup.description}</p>
 
-              <div className="info-block">
-                <p><strong>Tech Stack</strong></p>
-                <div className="tag-row">
-                  {startup.tech_stack.map((item) => (
-                    <span key={item} className="soft-tag">{item}</span>
-                  ))}
+              
+              {startup.tech_stack && startup.tech_stack.length > 0 && (
+                <div className="info-block">
+                  <p><strong>Tech Stack</strong></p>
+                  <div className="tag-row">
+                    {startup.tech_stack.map((item) => (
+                      <span key={item} className="soft-tag">{item}</span>
+                    ))}
+                  </div>
                 </div>
-              </div>
+              )}
 
-              <div className="info-block">
-                <p><strong>Roles</strong></p>
-                <div className="tag-row">
-                  {startup.roles.map((item) => (
-                    <span key={item} className="soft-tag">{item}</span>
-                  ))}
+              {startup.roles && startup.roles.length > 0 && (
+                <div className="info-block">
+                  <p><strong>Roles</strong></p>
+                  <div className="tag-row">
+                    {startup.roles.map((item) => (
+                      <span key={item} className="soft-tag">{item}</span>
+                    ))}
+                  </div>
                 </div>
-              </div>
+              )}
 
               <div className="info-block">
                 <p><strong>Matched Terms</strong></p>
