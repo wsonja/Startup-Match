@@ -206,7 +206,7 @@ input {
   z-index: 4;
   width: min(calc(100% - 32px), var(--max-width));
   margin: 0 auto;
-  padding: 24px 0 72px;
+  padding: 72px 0 72px;
 }
 
 .glass-card {
