@@ -16,6 +16,7 @@ function App(): JSX.Element {
   const [mouse, setMouse] = useState({ x: 50, y: 35 })
   const [uploading, setUploading] = useState<boolean>(false)
   const [uploadedFileName, setUploadedFileName] = useState<string>('')
+  const [hasSearched, setHasSearched] = useState<boolean>(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
 
@@ -54,40 +55,25 @@ function App(): JSX.Element {
     }
   }, [])
 
-  const handleSearch = async (
-    nextSkills: string,
-    nextExperience?: string,
-    nextInterests?: string,
-    nextLocation?: string
-  ): Promise<void> => {
-    const skillsValue = nextSkills
-    const experienceValue = nextExperience ?? experience
-    const interestsValue = nextInterests ?? interests
-    const locationValue = nextLocation !== undefined ? nextLocation : locationFilter
+  const handleSearch = async (skillsOverride?: string): Promise<void> => {
+    const s = skillsOverride !== undefined ? skillsOverride : skills
 
-    setSkills(skillsValue)
-    if (nextExperience !== undefined) setExperience(nextExperience)
-    if (nextInterests !== undefined) setInterests(nextInterests)
-    if (nextLocation !== undefined) setLocationFilter(nextLocation)
-
-    if (
-      skillsValue.trim() === '' &&
-      experienceValue.trim() === '' &&
-      interestsValue.trim() === ''
-    ) {
+    if (s.trim() === '' && experience.trim() === '' && interests.trim() === '') {
       setStartups([])
+      setHasSearched(false)
       return
     }
 
     const params = new URLSearchParams()
-    if (skillsValue.trim()) params.append('skills', skillsValue)
-    if (experienceValue.trim()) params.append('experience', experienceValue)
-    if (interestsValue.trim()) params.append('interests', interestsValue)
-    if (locationValue.trim()) params.append('location', locationValue)
+    if (s.trim()) params.append('skills', s)
+    if (experience.trim()) params.append('experience', experience)
+    if (interests.trim()) params.append('interests', interests)
+    if (locationFilter.trim()) params.append('location', locationFilter)
 
     const response = await fetch(`/api/startups?${params.toString()}`)
     const data: Startup[] = await response.json()
     setStartups(data)
+    setHasSearched(true)
   }
 
   const handleUploadClick = () => {
@@ -120,7 +106,7 @@ function App(): JSX.Element {
       setSkills(extractedSkills)
 
       if (extractedSkills.trim() !== '') {
-        await handleSearch(extractedSkills, experience, interests)
+        await handleSearch(extractedSkills)
       }
     } catch (error) {
       console.error('Upload error:', error)
@@ -206,7 +192,8 @@ function App(): JSX.Element {
               id="search-input"
               placeholder="Skills: Python, React, NLP, SQL..."
               value={skills}
-              onChange={(e) => handleSearch(e.target.value)}
+              onChange={(e) => setSkills(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') handleSearch() }}
             />
 
             <input
@@ -225,6 +212,14 @@ function App(): JSX.Element {
             >
               {uploading ? 'Parsing...' : 'Upload'}
             </button>
+
+            <button
+              type="button"
+              className="search-button"
+              onClick={() => handleSearch()}
+            >
+              Search →
+            </button>
           </div>
 
           <div className="location-filter-row">
@@ -232,7 +227,7 @@ function App(): JSX.Element {
             <select
               className="location-select"
               value={locationFilter}
-              onChange={(e) => handleSearch(skills, experience, interests, e.target.value)}
+              onChange={(e) => setLocationFilter(e.target.value)}
             >
               <option value="">All locations</option>
               {availableLocations.map((loc) => (
@@ -255,13 +250,13 @@ function App(): JSX.Element {
                 className="advanced-input"
                 placeholder="Experience (optional): built a React app, worked on backend APIs, ML project..."
                 value={experience}
-                onChange={(e) => handleSearch(skills, e.target.value, interests)}
+                onChange={(e) => setExperience(e.target.value)}
               />
               <textarea
                 className="advanced-input"
                 placeholder="Interests (optional): fintech, healthtech, developer tools, AI infrastructure..."
                 value={interests}
-                onChange={(e) => handleSearch(skills, experience, e.target.value)}
+                onChange={(e) => setInterests(e.target.value)}
               />
             </div>
           )}
@@ -273,16 +268,20 @@ function App(): JSX.Element {
         </section>
 
         <section className="results-grid">
-          {startups.length === 0 &&
-            skills.trim() === '' &&
-            experience.trim() === '' &&
-            interests.trim() === '' && (
+          {!hasSearched && (
             <div className="glass-card empty-state">
               <h2>Start with your profile</h2>
               <p>
                 Try skills like Python, machine learning, frontend development,
                 backend, NLP, React, data analysis, or robotics.
               </p>
+            </div>
+          )}
+
+          {hasSearched && startups.length === 0 && (
+            <div className="glass-card empty-state">
+              <h2>No matches found</h2>
+              <p>Try different skills, broaden your location filter, or remove optional fields.</p>
             </div>
           )}
 

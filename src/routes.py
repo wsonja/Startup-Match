@@ -82,7 +82,11 @@ def get_company_fields(company):
             company.get("country", "") or "",
         ]).strip(),
         "tech_stack": normalize_text_list(company.get("aggregated_skills", [])),
-        "roles": normalize_text_list(company.get("inferred_roles", [])),
+        "roles": " ".join([
+            normalize_text_list(company.get("inferred_roles", [])),
+            company.get("short_description", "") or "",
+            company.get("long_description", "") or "",
+        ]).strip(),
     }
 
 def extract_matched_terms(query, company):
