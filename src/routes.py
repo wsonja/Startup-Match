@@ -115,9 +115,18 @@ def extract_matched_terms(query, company):
 
     return matched
 
-def rank_companies(skills_query, experience_query, interests_query, companies, top_k=20):
+def rank_companies(skills_query, experience_query, interests_query, companies, top_k=20, location_filter=None):
     if not skills_query and not experience_query and not interests_query:
         return []
+
+    if location_filter:
+        loc_lower = location_filter.lower()
+        companies = [
+            c for c in companies
+            if loc_lower in (c.get("location") or "").lower()
+            or loc_lower in (c.get("city") or "").lower()
+            or loc_lower in (c.get("country") or "").lower()
+        ]
 
     company_fields = [get_company_fields(company) for company in companies]
 
@@ -261,12 +270,23 @@ def register_routes(app):
     def config():
         return jsonify({"use_llm": USE_LLM})
 
+    @app.route("/api/locations")
+    def get_locations():
+        counts = {}
+        for company in COMPANIES:
+            loc = (company.get("location") or "").strip()
+            if loc:
+                counts[loc] = counts.get(loc, 0) + 1
+        sorted_locs = sorted(counts, key=lambda x: -counts[x])
+        return jsonify(sorted_locs)
+
     @app.route("/api/startups")
     def startups_search():
         skills = request.args.get("skills", "").strip()
         experience = request.args.get("experience", "").strip()
         interests = request.args.get("interests", "").strip()
-        return jsonify(rank_companies(skills, experience, interests, COMPANIES))
+        location = request.args.get("location", "").strip()
+        return jsonify(rank_companies(skills, experience, interests, COMPANIES, location_filter=location or None))
 
     @app.route("/api/parse-skills-image", methods=["POST"])
     def parse_skills_image():

@@ -12,3 +12,4 @@ scikit-learn
 pandas
 git+https://github.com/MrPeterss/infosci-spark-client.git
 easyocr
+scikit-learn

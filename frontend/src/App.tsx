@@ -8,6 +8,8 @@ function App(): JSX.Element {
   const [skills, setSkills] = useState<string>('')
   const [experience, setExperience] = useState<string>('')
   const [interests, setInterests] = useState<string>('')
+  const [locationFilter, setLocationFilter] = useState<string>('')
+  const [availableLocations, setAvailableLocations] = useState<string[]>([])
   const [showAdvanced, setShowAdvanced] = useState<boolean>(false)
   const [startups, setStartups] = useState<Startup[]>([])
   const [navOpacity, setNavOpacity] = useState<number>(0)
@@ -16,6 +18,13 @@ function App(): JSX.Element {
   const [uploadedFileName, setUploadedFileName] = useState<string>('')
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+
+  useEffect(() => {
+    fetch('/api/locations')
+      .then((r) => r.json())
+      .then((locs: string[]) => setAvailableLocations(locs))
+      .catch(() => {})
+  }, [])
 
   useEffect(() => {
     const handleScroll = () => {
@@ -48,15 +57,18 @@ function App(): JSX.Element {
   const handleSearch = async (
     nextSkills: string,
     nextExperience?: string,
-    nextInterests?: string
+    nextInterests?: string,
+    nextLocation?: string
   ): Promise<void> => {
     const skillsValue = nextSkills
     const experienceValue = nextExperience ?? experience
     const interestsValue = nextInterests ?? interests
+    const locationValue = nextLocation !== undefined ? nextLocation : locationFilter
 
     setSkills(skillsValue)
     if (nextExperience !== undefined) setExperience(nextExperience)
     if (nextInterests !== undefined) setInterests(nextInterests)
+    if (nextLocation !== undefined) setLocationFilter(nextLocation)
 
     if (
       skillsValue.trim() === '' &&
@@ -71,6 +83,7 @@ function App(): JSX.Element {
     if (skillsValue.trim()) params.append('skills', skillsValue)
     if (experienceValue.trim()) params.append('experience', experienceValue)
     if (interestsValue.trim()) params.append('interests', interestsValue)
+    if (locationValue.trim()) params.append('location', locationValue)
 
     const response = await fetch(`/api/startups?${params.toString()}`)
     const data: Startup[] = await response.json()
@@ -212,6 +225,20 @@ function App(): JSX.Element {
             >
               {uploading ? 'Parsing...' : 'Upload'}
             </button>
+          </div>
+
+          <div className="location-filter-row">
+            <span className="location-filter-icon">📍</span>
+            <select
+              className="location-select"
+              value={locationFilter}
+              onChange={(e) => handleSearch(skills, experience, interests, e.target.value)}
+            >
+              <option value="">All locations</option>
+              {availableLocations.map((loc) => (
+                <option key={loc} value={loc}>{loc}</option>
+              ))}
+            </select>
           </div>
 
           <button
