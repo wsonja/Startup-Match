@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
 import { Startup } from './types'
-import logo from './assets/logo.png'
+import logo from './assets/logo-with-slogan.png'
 import logoMark from './assets/logo-mark.png'
 
 function App(): JSX.Element {

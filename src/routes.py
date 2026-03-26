@@ -3,6 +3,7 @@ import os
 from flask import send_from_directory, request, jsonify
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.decomposition import TruncatedSVD
 
 try:
     import easyocr
@@ -26,6 +27,32 @@ KNOWN_SKILLS = {
     "r", "matlab"
 }
 
+QUERY_ALIASES = {
+    "front end": "frontend ui web react javascript typescript html css",
+    "frontend": "frontend ui web react javascript typescript html css",
+    "ml": "machine learning ai pytorch tensorflow nlp llm deep learning",
+    "backend": "backend api database sql postgresql mongodb flask django fastapi node.js infrastructure",
+    "fullstack": "full stack",
+    "full-stack": "full stack",
+}
+
+ALLOWED_EXPANSION_TERMS = set(KNOWN_SKILLS) | {
+    "ui",
+    "ux",
+    "web",
+    "software engineer",
+    "full stack",
+    "machine learning",
+    "ai",
+    "data science",
+    "product",
+    "marketing",
+    "security",
+    "engineering",
+    "frontend software engineer",
+    "backend software engineer",
+}
+
 reader = None
 
 
@@ -39,26 +66,6 @@ def load_companies():
 
 COMPANIES = load_companies()
 
-
-def build_company_document(company):
-    if company.get("retrieval_document"):
-        return company["retrieval_document"]
-
-    pieces = [
-        company.get("canonical_name", ""),
-        company.get("short_description", ""),
-        company.get("long_description", ""),
-        " ".join(company.get("tags", []) or []),
-        " ".join(company.get("categories", []) or []),
-        company.get("sector", "") or "",
-        company.get("subsector", "") or "",
-        company.get("location", "") or "",
-        company.get("city", "") or "",
-        company.get("state", "") or "",
-        company.get("country", "") or "",
-        " ".join(company.get("aggregated_skills", []) or []),
-    ]
-    return " ".join([p for p in pieces if p]).strip()
 
 def normalize_text_list(items):
     return " ".join(str(x) for x in (items or []) if x)
@@ -89,6 +96,144 @@ def get_company_fields(company):
         ]).strip(),
     }
 
+
+def get_svd_doc(company):
+    return " ".join([
+        normalize_text_list(company.get("aggregated_skills", [])),
+        normalize_text_list(company.get("inferred_roles", [])),
+        normalize_text_list(company.get("tags", [])),
+        normalize_text_list(company.get("categories", [])),
+        company.get("sector", "") or "",
+        company.get("subsector", "") or "",
+        company.get("short_description", "") or "",
+    ]).strip().lower()
+
+
+def build_svd_term_space(companies):
+    docs = [get_svd_doc(company) for company in companies]
+    docs = [doc for doc in docs if doc.strip()]
+
+    if len(docs) < 3:
+        return None
+
+    vectorizer = TfidfVectorizer(
+        lowercase=True,
+        stop_words="english",
+        ngram_range=(1, 2),
+        min_df=1
+    )
+    X = vectorizer.fit_transform(docs)
+
+    if X.shape[0] < 3 or X.shape[1] < 3:
+        return None
+
+    n_components = min(50, X.shape[0] - 1, X.shape[1] - 1)
+    if n_components < 2:
+        return None
+
+    svd = TruncatedSVD(n_components=n_components, random_state=42)
+    svd.fit(X)
+
+    feature_names = vectorizer.get_feature_names_out()
+    term_vectors = svd.components_.T
+    vocab = {term: idx for idx, term in enumerate(feature_names)}
+
+    return {
+        "vectorizer": vectorizer,
+        "svd": svd,
+        "feature_names": feature_names,
+        "term_vectors": term_vectors,
+        "vocab": vocab,
+    }
+
+
+SVD_SPACE = build_svd_term_space(COMPANIES)
+
+
+def get_term_vector(term, svd_space):
+    if svd_space is None:
+        return None
+
+    vocab = svd_space["vocab"]
+    term_vectors = svd_space["term_vectors"]
+
+    if term in vocab:
+        return term_vectors[vocab[term]]
+
+    parts = term.split()
+    part_vecs = [term_vectors[vocab[p]] for p in parts if p in vocab]
+    if part_vecs:
+        return sum(part_vecs) / len(part_vecs)
+
+    return None
+
+
+def normalize_query_for_svd(query):
+    q = (query or "").strip().lower()
+    return QUERY_ALIASES.get(q, q)
+
+
+def get_svd_expansion_terms(query, svd_space, top_k=4, min_sim=0.2):
+    if not query or not svd_space:
+        return []
+
+    normalized_query = normalize_query_for_svd(query)
+    query_vec = get_term_vector(normalized_query, svd_space)
+
+    if query_vec is None:
+        return []
+
+    sims = cosine_similarity(
+        query_vec.reshape(1, -1),
+        svd_space["term_vectors"]
+    ).flatten()
+
+    feature_names = svd_space["feature_names"]
+    original_tokens = set(normalized_query.split())
+    excluded_terms = {normalized_query} | original_tokens
+
+    results = []
+    ranked_indices = sims.argsort()[::-1]
+
+    for idx in ranked_indices:
+        term = feature_names[idx]
+        sim = sims[idx]
+
+        if sim < min_sim:
+            break
+
+        if term in excluded_terms:
+            continue
+
+        if term not in ALLOWED_EXPANSION_TERMS:
+            continue
+
+        if len(term) < 3 and term not in {"ui", "ux", "ai", "ml"}:
+            continue
+
+        results.append(term)
+        if len(results) >= top_k:
+            break
+
+    return results
+
+
+def expand_skills_query(skills_query, svd_space):
+    if not skills_query or not skills_query.strip():
+        return "", []
+
+    normalized_query = normalize_query_for_svd(skills_query)
+    expansion_terms = get_svd_expansion_terms(normalized_query, svd_space)
+
+    pieces = []
+    for part in [skills_query, normalized_query] + expansion_terms:
+        part = (part or "").strip()
+        if part and part not in pieces:
+            pieces.append(part)
+
+    return " ".join(pieces), expansion_terms
+
+
 def extract_matched_terms(query, company):
     query_lower = (query or "").lower().strip()
     query_terms = query_lower.split()
@@ -104,6 +249,7 @@ def extract_matched_terms(query, company):
         company.get("location", ""),
         company.get("country", ""),
         " ".join(company.get("aggregated_skills", []) or []),
+        " ".join(company.get("inferred_roles", []) or []),
     ]
 
     searchable_text = " ".join(str(part or "") for part in searchable_parts).lower()
@@ -119,9 +265,12 @@ def extract_matched_terms(query, company):
 
     return matched
 
+
 def rank_companies(skills_query, experience_query, interests_query, companies, top_k=20, location_filter=None):
     if not skills_query and not experience_query and not interests_query:
         return []
+
+    original_count = len(companies)
 
     if location_filter:
         loc_lower = location_filter.lower()
@@ -131,6 +280,18 @@ def rank_companies(skills_query, experience_query, interests_query, companies, t
             or loc_lower in (c.get("city") or "").lower()
             or loc_lower in (c.get("country") or "").lower()
         ]
+
+    expanded_skills_query, svd_expansion_terms = expand_skills_query(skills_query, SVD_SPACE)
+
+    print("\n" + "=" * 80)
+    print("SEARCH DEBUG")
+    print(f"skills_query:      {skills_query!r}")
+    print(f"experience_query:  {experience_query!r}")
+    print(f"interests_query:   {interests_query!r}")
+    print(f"expanded_skills:   {expanded_skills_query!r}")
+    print(f"svd_expansion:     {svd_expansion_terms}")
+    print(f"location_filter:   {location_filter!r}")
+    print(f"companies searched:{len(companies)} / {original_count}")
 
     company_fields = [get_company_fields(company) for company in companies]
 
@@ -155,7 +316,7 @@ def rank_companies(skills_query, experience_query, interests_query, companies, t
         matrix = vectorizer.fit_transform(corpus)
         return cosine_similarity(matrix[0:1], matrix[1:]).flatten()
 
-    skills_sims = cosine_scores(skills_query, skills_docs)
+    skills_sims = cosine_scores(expanded_skills_query, skills_docs)
     roles_sims = cosine_scores(experience_query, roles_docs)
     context_sims = cosine_scores(interests_query, context_docs)
 
@@ -198,10 +359,37 @@ def rank_companies(skills_query, experience_query, interests_query, companies, t
                 "keywords": company.get("tags", []) + company.get("categories", []),
                 "url": company.get("website"),
                 "match_score": round(final_score * 100, 2),
-                "matched_terms": extract_matched_terms(combined_query, company)
+                "matched_terms": extract_matched_terms(combined_query, company),
+                "svd_expansion_terms": svd_expansion_terms,
+                "_debug": {
+                    "skills_sim": round(float(skills_sims[i]), 4),
+                    "roles_sim": round(float(roles_sims[i]), 4),
+                    "context_sim": round(float(context_sims[i]), 4),
+                    "final_score_raw": round(float(final_score), 4),
+                    "tech_stack_text": company_fields[i]["tech_stack"],
+                    "roles_text": company_fields[i]["roles"],
+                    "context_text": context_docs[i][:220]
+                }
             })
 
     ranked.sort(key=lambda x: x["match_score"], reverse=True)
+
+    print("\nTOP RESULTS")
+    for idx, item in enumerate(ranked[:5], start=1):
+        dbg = item["_debug"]
+        print(
+            f"{idx}. {item['name']} | match={item['match_score']} "
+            f"| skills_sim={dbg['skills_sim']} roles_sim={dbg['roles_sim']} context_sim={dbg['context_sim']}"
+        )
+        print(f"   matched_terms: {item['matched_terms']}")
+        print(f"   tech_stack:    {dbg['tech_stack_text']}")
+        print(f"   roles_text:    {dbg['roles_text'][:180]}")
+        print(f"   context_text:  {dbg['context_text']}")
+        print()
+
+    for item in ranked:
+        item.pop("_debug", None)
+
     return ranked[:top_k]
 
 
@@ -290,7 +478,15 @@ def register_routes(app):
         experience = request.args.get("experience", "").strip()
         interests = request.args.get("interests", "").strip()
         location = request.args.get("location", "").strip()
-        return jsonify(rank_companies(skills, experience, interests, COMPANIES, location_filter=location or None))
+        return jsonify(
+            rank_companies(
+                skills,
+                experience,
+                interests,
+                COMPANIES,
+                location_filter=location or None
+            )
+        )
 
     @app.route("/api/parse-skills-image", methods=["POST"])
     def parse_skills_image():
