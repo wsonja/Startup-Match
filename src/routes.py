@@ -1,5 +1,7 @@
+import difflib
 import json
 import os
+import re
 from flask import send_from_directory, request, jsonify
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
@@ -218,15 +220,59 @@ def get_svd_expansion_terms(query, svd_space, top_k=4, min_sim=0.2):
     return results
 
 
+def fuzzy_correct_query(query, svd_space):
+    """
+    Correct each token in the query against the known skills vocabulary.
+    Handles both prefix matches (pyth → python) and typos (pyhton → python).
+    Returns the corrected query string.
+    """
+    if not query or not svd_space:
+        return query
+
+    vocab = svd_space["vocab"]
+    candidates = list(KNOWN_SKILLS) + [t for t in vocab if len(t) >= 3 and " " not in t]
+    candidates_lower = [c.lower() for c in candidates]
+
+    tokens = re.split(r"[\s,]+", query.lower().strip())
+    corrected_tokens = []
+
+    for token in tokens:
+        if not token:
+            continue
+
+        # Skip if already an exact match or very short word
+        if token in vocab or token in KNOWN_SKILLS or len(token) <= 2:
+            corrected_tokens.append(token)
+            continue
+
+        # 1. Prefix match: find all candidates that start with this token
+        prefix_matches = [c for c in candidates_lower if c.startswith(token)]
+        if prefix_matches:
+            # Pick the shortest prefix match (most specific)
+            best = min(prefix_matches, key=len)
+            corrected_tokens.append(best)
+            continue
+
+        # 2. Fuzzy match via difflib (handles transpositions, missing letters)
+        close = difflib.get_close_matches(token, candidates_lower, n=1, cutoff=0.72)
+        if close:
+            corrected_tokens.append(close[0])
+        else:
+            corrected_tokens.append(token)
+
+    return " ".join(corrected_tokens)
+
+
 def expand_skills_query(skills_query, svd_space):
     if not skills_query or not skills_query.strip():
         return "", []
 
-    normalized_query = normalize_query_for_svd(skills_query)
+    corrected_query = fuzzy_correct_query(skills_query.strip(), svd_space)
+    normalized_query = normalize_query_for_svd(corrected_query)
     expansion_terms = get_svd_expansion_terms(normalized_query, svd_space)
 
     pieces = []
-    for part in [skills_query, normalized_query] + expansion_terms:
+    for part in [corrected_query, normalized_query] + expansion_terms:
         part = (part or "").strip()
         if part and part not in pieces:
             pieces.append(part)
@@ -266,20 +312,113 @@ def extract_matched_terms(query, company):
     return matched
 
 
-def rank_companies(skills_query, experience_query, interests_query, companies, top_k=20, location_filter=None):
-    if not skills_query and not experience_query and not interests_query:
+STAGE_ORDER = ["Seed", "Series A", "Series B", "Series C", "Series D", "Series E", "Series F", "Other"]
+
+LOCATION_REGIONS = {
+    "Bay Area": ["san francisco", "palo alto", "mountain view", "berkeley", "oakland", "san jose",
+                 "san mateo", "redwood city", "sunnyvale", "menlo park", "santa clara",
+                 "san carlos", "burlingame", "south san francisco", "foster city",
+                 "emeryville", "san leandro", "cupertino", "pleasanton", "walnut creek",
+                 "newark", "fremont", "milpitas"],
+    "New York": ["new york", "brooklyn", "manhattan", "queens", "bronx", "jersey city", "hoboken"],
+    "Los Angeles": ["los angeles", "santa monica", "west hollywood", "culver city",
+                    "long beach", "pasadena", "el segundo", "venice"],
+    "Seattle": ["seattle", "bellevue", "redmond", "kirkland", "tacoma"],
+    "Boston": ["boston", "cambridge, ma", "somerville", "cambridge, united kingdom"],
+    "Austin": ["austin"],
+    "Chicago": ["chicago"],
+    "London": ["london"],
+    "India": ["india", "bengaluru", "mumbai", "delhi", "hyderabad", "gurugram", "pune", "chennai"],
+    "Canada": ["canada", "toronto", "waterloo", "kitchener", "montreal", "vancouver", "edmonton", "victoria"],
+    "Europe": ["london", "paris", "berlin", "amsterdam", "barcelona", "stockholm", "oslo",
+               "zürich", "zurich", "copenhagen", "munich", "madrid", "warsaw", "kraków", "krakow",
+               "vienna", "brussels", "lisbon", "rome", "milan", "dublin"],
+    "Latin America": ["mexico city", "são paulo", "sao paulo", "santiago", "monterrey",
+                      "bogotá", "bogota", "guadalajara", "buenos aires", "lima",
+                      "medellín", "medellin", "cali", "zapopan", "panama city", "rio de janeiro"],
+    "Southeast Asia": ["singapore", "jakarta", "ho chi minh", "kuala lumpur", "manila", "bangkok", "makati"],
+}
+SERIES_STAGES = {"Seed", "Series A", "Series B", "Series C", "Series D", "Series E", "Series F"}
+
+
+def get_company_stage(company):
+    """Return the effective funding stage for a company.
+    YC companies without an explicit round are treated as Seed.
+    Anything outside Seed/Series A-F is bucketed as Other."""
+    rt = (company.get("funding_summary") or {}).get("latest_round_type")
+    if rt:
+        s = rt.strip()
+        normalized = "Seed" if s.lower().startswith("seed") else s
+        return normalized if normalized in SERIES_STAGES else "Other"
+    if company.get("yc_batch"):
+        return "Seed"
+    return None
+
+
+def rank_companies(skills_query, experience_query, interests_query, companies, top_k=20, location_filter=None, stage_filter=None, role_filter=None):
+    no_query = not skills_query and not experience_query and not interests_query
+
+    if no_query and not location_filter and not stage_filter and not role_filter:
         return []
 
     original_count = len(companies)
 
     if location_filter:
-        loc_lower = location_filter.lower()
+        region_terms = LOCATION_REGIONS.get(location_filter)
+        if region_terms:
+            companies = [
+                c for c in companies
+                if any(
+                    term in (c.get("location") or "").lower()
+                    or term in (c.get("city") or "").lower()
+                    or term in (c.get("country") or "").lower()
+                    for term in region_terms
+                )
+            ]
+        else:
+            loc_lower = location_filter.lower()
+            companies = [
+                c for c in companies
+                if loc_lower in (c.get("location") or "").lower()
+                or loc_lower in (c.get("city") or "").lower()
+                or loc_lower in (c.get("country") or "").lower()
+            ]
+
+    if stage_filter:
         companies = [
             c for c in companies
-            if loc_lower in (c.get("location") or "").lower()
-            or loc_lower in (c.get("city") or "").lower()
-            or loc_lower in (c.get("country") or "").lower()
+            if get_company_stage(c) == stage_filter
         ]
+
+    if role_filter:
+        role_lower = role_filter.lower()
+        companies = [
+            c for c in companies
+            if any(role_lower == r.lower() for r in (c.get("inferred_roles") or []))
+        ]
+
+    if no_query:
+        results = []
+        for company in companies[:top_k]:
+            results.append({
+                "name": company.get("canonical_name"),
+                "stage": company.get("yc_batch") or get_company_stage(company),
+                "yc_batch": company.get("yc_batch"),
+                "industry": (
+                    company.get("sector")
+                    or (company.get("tags")[0] if company.get("tags") else None)
+                ),
+                "location": company.get("location"),
+                "description": company.get("short_description") or company.get("long_description"),
+                "tech_stack": company.get("aggregated_skills", []),
+                "roles": company.get("inferred_roles", []),
+                "keywords": company.get("tags", []) + company.get("categories", []),
+                "url": company.get("website"),
+                "match_score": 0,
+                "matched_terms": [],
+                "svd_expansion_terms": [],
+            })
+        return results
 
     expanded_skills_query, svd_expansion_terms = expand_skills_query(skills_query, SVD_SPACE)
 
@@ -288,9 +427,10 @@ def rank_companies(skills_query, experience_query, interests_query, companies, t
     print(f"skills_query:      {skills_query!r}")
     print(f"experience_query:  {experience_query!r}")
     print(f"interests_query:   {interests_query!r}")
-    print(f"expanded_skills:   {expanded_skills_query!r}")
+    print(f"expanded_skills:   {expanded_skills_query!r} (fuzzy+SVD)")
     print(f"svd_expansion:     {svd_expansion_terms}")
     print(f"location_filter:   {location_filter!r}")
+    print(f"stage_filter:      {stage_filter!r}")
     print(f"companies searched:{len(companies)} / {original_count}")
 
     company_fields = [get_company_fields(company) for company in companies]
@@ -472,19 +612,58 @@ def register_routes(app):
         sorted_locs = sorted(counts, key=lambda x: -counts[x])
         return jsonify(sorted_locs)
 
+    @app.route("/api/roles")
+    def get_roles():
+        counts = {}
+        for company in COMPANIES:
+            for role in (company.get("inferred_roles") or []):
+                role = role.strip()
+                if role:
+                    counts[role] = counts.get(role, 0) + 1
+        sorted_roles = sorted(counts, key=lambda x: -counts[x])
+        return jsonify(sorted_roles)
+
+    @app.route("/api/regions")
+    def get_regions():
+        counts = {}
+        for region, terms in LOCATION_REGIONS.items():
+            for company in COMPANIES:
+                loc = (company.get("location") or "").lower()
+                city = (company.get("city") or "").lower()
+                country = (company.get("country") or "").lower()
+                if any(t in loc or t in city or t in country for t in terms):
+                    counts[region] = counts.get(region, 0) + 1
+        ordered = [r for r in LOCATION_REGIONS if r in counts]
+        return jsonify([{"name": r, "count": counts[r]} for r in ordered])
+
+    @app.route("/api/funding-stages")
+    def get_funding_stages():
+        counts = {}
+        for company in COMPANIES:
+            stage = get_company_stage(company)
+            if stage:
+                counts[stage] = counts.get(stage, 0) + 1
+        ordered = [s for s in STAGE_ORDER if s in counts]
+        remaining = sorted((s for s in counts if s not in STAGE_ORDER), key=lambda x: -counts[x])
+        return jsonify(ordered + remaining)
+
     @app.route("/api/startups")
     def startups_search():
         skills = request.args.get("skills", "").strip()
         experience = request.args.get("experience", "").strip()
         interests = request.args.get("interests", "").strip()
         location = request.args.get("location", "").strip()
+        stage = request.args.get("stage", "").strip()
+        role = request.args.get("role", "").strip()
         return jsonify(
             rank_companies(
                 skills,
                 experience,
                 interests,
                 COMPANIES,
-                location_filter=location or None
+                location_filter=location or None,
+                stage_filter=stage or None,
+                role_filter=role or None,
             )
         )
 

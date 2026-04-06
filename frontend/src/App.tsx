@@ -10,6 +10,11 @@ function App(): JSX.Element {
   const [interests, setInterests] = useState<string>('')
   const [locationFilter, setLocationFilter] = useState<string>('')
   const [availableLocations, setAvailableLocations] = useState<string[]>([])
+  const [availableRegions, setAvailableRegions] = useState<{ name: string; count: number }[]>([])
+  const [stageFilter, setStageFilter] = useState<string>('')
+  const [availableStages, setAvailableStages] = useState<string[]>([])
+  const [roleFilter, setRoleFilter] = useState<string>('')
+  const [availableRoles, setAvailableRoles] = useState<string[]>([])
   const [showAdvanced, setShowAdvanced] = useState<boolean>(false)
   const [startups, setStartups] = useState<Startup[]>([])
   const [navOpacity, setNavOpacity] = useState<number>(0)
@@ -25,7 +30,23 @@ function App(): JSX.Element {
       .then((r) => r.json())
       .then((locs: string[]) => setAvailableLocations(locs))
       .catch(() => {})
+    fetch('/api/funding-stages')
+      .then((r) => r.json())
+      .then((stages: string[]) => setAvailableStages(stages))
+      .catch(() => {})
+    fetch('/api/roles')
+      .then((r) => r.json())
+      .then((roles: string[]) => setAvailableRoles(roles))
+      .catch(() => {})
+    fetch('/api/regions')
+      .then((r) => r.json())
+      .then((regions: { name: string; count: number }[]) => setAvailableRegions(regions))
+      .catch(() => {})
   }, [])
+
+  useEffect(() => {
+    handleSearch()
+  }, [locationFilter, stageFilter, roleFilter])
 
   useEffect(() => {
     const handleScroll = () => {
@@ -58,7 +79,10 @@ function App(): JSX.Element {
   const handleSearch = async (skillsOverride?: string): Promise<void> => {
     const s = skillsOverride !== undefined ? skillsOverride : skills
 
-    if (s.trim() === '' && experience.trim() === '' && interests.trim() === '') {
+    const hasQuery = s.trim() !== '' || experience.trim() !== '' || interests.trim() !== ''
+    const hasFilter = locationFilter.trim() !== '' || stageFilter.trim() !== '' || roleFilter.trim() !== ''
+
+    if (!hasQuery && !hasFilter) {
       setStartups([])
       setHasSearched(false)
       return
@@ -69,6 +93,8 @@ function App(): JSX.Element {
     if (experience.trim()) params.append('experience', experience)
     if (interests.trim()) params.append('interests', interests)
     if (locationFilter.trim()) params.append('location', locationFilter)
+    if (stageFilter.trim()) params.append('stage', stageFilter)
+    if (roleFilter.trim()) params.append('role', roleFilter)
 
     const response = await fetch(`/api/startups?${params.toString()}`)
     const data: Startup[] = await response.json()
@@ -222,19 +248,58 @@ function App(): JSX.Element {
             </button>
           </div>
 
-          <div className="location-filter-row">
-            <span className="location-filter-icon">📍</span>
-            <select
-              className="location-select"
-              value={locationFilter}
-              onChange={(e) => setLocationFilter(e.target.value)}
-            >
-              <option value="">All locations</option>
-              {availableLocations.map((loc) => (
-                <option key={loc} value={loc}>{loc}</option>
-              ))}
-            </select>
-          </div>
+          <div className="filter-row">
+              <div className="location-filter-row">
+                <span className="location-filter-icon">📍</span>
+                <select
+                  className="location-select"
+                  value={locationFilter}
+                  onChange={(e) => setLocationFilter(e.target.value)}
+                >
+                  <option value="">All locations</option>
+                  {availableRegions.length > 0 && (
+                    <optgroup label="── Regions ──">
+                      {availableRegions.map((r) => (
+                        <option key={r.name} value={r.name}>{r.name}</option>
+                      ))}
+                    </optgroup>
+                  )}
+                  <optgroup label="── Cities ──">
+                    {availableLocations.map((loc) => (
+                      <option key={loc} value={loc}>{loc}</option>
+                    ))}
+                  </optgroup>
+                </select>
+              </div>
+
+              <div className="location-filter-row">
+                <span className="location-filter-icon">💰</span>
+                <select
+                  className="location-select"
+                  value={stageFilter}
+                  onChange={(e) => setStageFilter(e.target.value)}
+                >
+                  <option value="">All stages</option>
+                  {availableStages.map((stage) => (
+                    <option key={stage} value={stage}>{stage}</option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="location-filter-row">
+                <span className="location-filter-icon">💼</span>
+                <select
+                  className="location-select"
+                  value={roleFilter}
+                  onChange={(e) => setRoleFilter(e.target.value)}
+                >
+                  <option value="">All roles</option>
+                  {availableRoles.map((role) => (
+                    <option key={role} value={role}>{role}</option>
+                  ))}
+                </select>
+              </div>
+            </div>
 
           <button
             type="button"
