@@ -19,6 +19,8 @@ from werkzeug.utils import secure_filename
 USE_LLM = False
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
 
+SHORT_ACRONYMS = {"ai", "ml", "ui", "ux", "hr", "vc", "db", "os", "cv", "nlp", "llm", "api"}
+
 KNOWN_SKILLS = {
     "python", "java", "c++", "c", "javascript", "typescript", "react", "node",
     "node.js", "flask", "django", "fastapi", "sql", "postgresql", "mysql",
@@ -26,16 +28,19 @@ KNOWN_SKILLS = {
     "machine learning", "deep learning", "nlp", "llm", "data analysis",
     "pandas", "numpy", "scikit-learn", "opencv", "html", "css", "git",
     "backend", "frontend", "data structures", "algorithms", "linux", "bash",
-    "r", "matlab"
+    "r", "matlab", "ai", "ml", "ui", "ux", "api", "cv",
 }
 
 QUERY_ALIASES = {
     "front end": "frontend ui web react javascript typescript html css",
     "frontend": "frontend ui web react javascript typescript html css",
+    "ai": "machine learning ai pytorch tensorflow nlp llm deep learning artificial intelligence",
     "ml": "machine learning ai pytorch tensorflow nlp llm deep learning",
     "backend": "backend api database sql postgresql mongodb flask django fastapi node.js infrastructure",
     "fullstack": "full stack",
     "full-stack": "full stack",
+    "ux": "ux ui design product designer user experience",
+    "ui": "ui ux design frontend react javascript",
 }
 
 ALLOWED_EXPANSION_TERMS = set(KNOWN_SKILLS) | {
@@ -122,7 +127,8 @@ def build_svd_term_space(companies):
         lowercase=True,
         stop_words="english",
         ngram_range=(1, 2),
-        min_df=1
+        min_df=1,
+        token_pattern=r"(?u)\b\w[\w.+#-]*\b",
     )
     X = vectorizer.fit_transform(docs)
 
@@ -220,47 +226,60 @@ def get_svd_expansion_terms(query, svd_space, top_k=4, min_sim=0.2):
     return results
 
 
+def fuzzy_correct_phrase(phrase, vocab, single_word_candidates, multi_word_candidates):
+    """Correct a single phrase (which may contain spaces) against known skills."""
+    phrase = phrase.strip().lower()
+    if not phrase:
+        return phrase
+
+    # 1. Exact match against known multi-word or single-word skills
+    if phrase in vocab or phrase in KNOWN_SKILLS or phrase in SHORT_ACRONYMS:
+        return phrase
+
+    # 2. Try whole-phrase fuzzy match against multi-word candidates first
+    if " " in phrase:
+        close = difflib.get_close_matches(phrase, multi_word_candidates, n=1, cutoff=0.72)
+        if close:
+            return close[0]
+
+    # 3. For single words or unmatched phrases, correct word-by-word
+    words = phrase.split()
+    corrected = []
+    for word in words:
+        if not word:
+            continue
+        if word in vocab or word in KNOWN_SKILLS or word in SHORT_ACRONYMS or len(word) <= 1:
+            corrected.append(word)
+            continue
+        # Prefix match
+        prefix_matches = [c for c in single_word_candidates if c.startswith(word)]
+        if prefix_matches:
+            corrected.append(min(prefix_matches, key=len))
+            continue
+        # Fuzzy match
+        close = difflib.get_close_matches(word, single_word_candidates, n=1, cutoff=0.72)
+        corrected.append(close[0] if close else word)
+
+    return " ".join(corrected)
+
+
 def fuzzy_correct_query(query, svd_space):
     """
-    Correct each token in the query against the known skills vocabulary.
-    Handles both prefix matches (pyth → python) and typos (pyhton → python).
-    Returns the corrected query string.
+    Split query on commas so multi-word phrases like 'data analytics' stay together.
+    Each comma-separated phrase is fuzzy-corrected as a unit.
     """
     if not query or not svd_space:
         return query
 
     vocab = svd_space["vocab"]
-    candidates = list(KNOWN_SKILLS) + [t for t in vocab if len(t) >= 3 and " " not in t]
-    candidates_lower = [c.lower() for c in candidates]
+    all_known = list(KNOWN_SKILLS) + [t for t in vocab if " " not in t and len(t) >= 2]
+    single_word_candidates = [t.lower() for t in all_known if " " not in t]
+    multi_word_candidates = [t.lower() for t in KNOWN_SKILLS if " " in t] + \
+                            [t.lower() for t in vocab if " " in t]
 
-    tokens = re.split(r"[\s,]+", query.lower().strip())
-    corrected_tokens = []
-
-    for token in tokens:
-        if not token:
-            continue
-
-        # Skip if already an exact match or very short word
-        if token in vocab or token in KNOWN_SKILLS or len(token) <= 2:
-            corrected_tokens.append(token)
-            continue
-
-        # 1. Prefix match: find all candidates that start with this token
-        prefix_matches = [c for c in candidates_lower if c.startswith(token)]
-        if prefix_matches:
-            # Pick the shortest prefix match (most specific)
-            best = min(prefix_matches, key=len)
-            corrected_tokens.append(best)
-            continue
-
-        # 2. Fuzzy match via difflib (handles transpositions, missing letters)
-        close = difflib.get_close_matches(token, candidates_lower, n=1, cutoff=0.72)
-        if close:
-            corrected_tokens.append(close[0])
-        else:
-            corrected_tokens.append(token)
-
-    return " ".join(corrected_tokens)
+    phrases = [p.strip() for p in query.split(",") if p.strip()]
+    corrected = [fuzzy_correct_phrase(p, vocab, single_word_candidates, multi_word_candidates) for p in phrases]
+    return " ".join(corrected)
 
 
 def expand_skills_query(skills_query, svd_space):
@@ -282,7 +301,7 @@ def expand_skills_query(skills_query, svd_space):
 
 def extract_matched_terms(query, company):
     query_lower = (query or "").lower().strip()
-    query_terms = query_lower.split()
+    query_terms = [t.strip(",.;:") for t in query_lower.split() if t.strip(",.;:")]
 
     searchable_parts = [
         company.get("canonical_name", ""),
