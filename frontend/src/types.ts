@@ -1,5 +1,12 @@
+export interface CompanyEvidence {
+  source: string
+  label: string
+  text: string
+  score: number
+}
+
 export interface Startup {
-  id: number
+  id?: number
   name: string
   stage: string
   yc_batch?: string
@@ -12,4 +19,7 @@ export interface Startup {
   url?: string
   match_score: number
   matched_terms: string[]
+  svd_expansion_terms?: string[]
+  evidence: CompanyEvidence[]
+  rag_explanation: string
 }

@@ -24,20 +24,22 @@ function App(): JSX.Element {
   const [hasSearched, setHasSearched] = useState<boolean>(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
-
   useEffect(() => {
     fetch('/api/locations')
       .then((r) => r.json())
       .then((locs: string[]) => setAvailableLocations(locs))
       .catch(() => {})
+
     fetch('/api/funding-stages')
       .then((r) => r.json())
       .then((stages: string[]) => setAvailableStages(stages))
       .catch(() => {})
+
     fetch('/api/roles')
       .then((r) => r.json())
       .then((roles: string[]) => setAvailableRoles(roles))
       .catch(() => {})
+
     fetch('/api/regions')
       .then((r) => r.json())
       .then((regions: { name: string; count: number }[]) => setAvailableRegions(regions))
@@ -45,7 +47,9 @@ function App(): JSX.Element {
   }, [])
 
   useEffect(() => {
-    handleSearch()
+    if (hasSearched) {
+      handleSearch()
+    }
   }, [locationFilter, stageFilter, roleFilter])
 
   useEffect(() => {
@@ -78,15 +82,6 @@ function App(): JSX.Element {
 
   const handleSearch = async (skillsOverride?: string): Promise<void> => {
     const s = skillsOverride !== undefined ? skillsOverride : skills
-
-    const hasQuery = s.trim() !== '' || experience.trim() !== '' || interests.trim() !== ''
-    const hasFilter = locationFilter.trim() !== '' || stageFilter.trim() !== '' || roleFilter.trim() !== ''
-
-    if (!hasQuery && !hasFilter) {
-      setStartups([])
-      setHasSearched(false)
-      return
-    }
 
     const params = new URLSearchParams()
     if (s.trim()) params.append('skills', s)
@@ -166,16 +161,39 @@ function App(): JSX.Element {
     el?.scrollIntoView({ behavior: 'smooth' })
   }
 
+  function highlightQuery(text: string, query: string): string {
+    if (!query) return text
+
+    const terms = query
+      .toLowerCase()
+      .split(/[\s,]+/)
+      .filter(Boolean)
+
+    let result = text
+
+    terms.forEach(term => {
+      const regex = new RegExp(`(${term})`, 'gi')
+      result = result.replace(
+        regex,
+        `<span class="highlight-word">$1</span>`
+      )
+    })
+
+    return result
+  }
+
   return (
     <div className="app-shell">
       <header className="floating-nav" style={{ opacity: navOpacity }}>
         <div className="floating-nav-inner">
           <div className="nav-brand">
-            <div className="nav-brand-mark"><img
-              src={logoMark}
-              alt="StartupMatch logo mark"
-              className="nav-brand-mark"
-            /></div>
+            <div className="nav-brand-mark">
+              <img
+                src={logoMark}
+                alt="StartupMatch logo mark"
+                className="nav-brand-mark"
+              />
+            </div>
             <span>StartupMatch</span>
           </div>
           <button className="nav-button" onClick={scrollToSearch}>
@@ -219,7 +237,9 @@ function App(): JSX.Element {
               placeholder="Skills: Python, React, NLP, SQL..."
               value={skills}
               onChange={(e) => setSkills(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') handleSearch() }}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') handleSearch()
+              }}
             />
 
             <input
@@ -249,57 +269,65 @@ function App(): JSX.Element {
           </div>
 
           <div className="filter-row">
-              <div className="location-filter-row">
-                <span className="location-filter-icon">📍</span>
-                <select
-                  className="location-select"
-                  value={locationFilter}
-                  onChange={(e) => setLocationFilter(e.target.value)}
-                >
-                  <option value="">All locations</option>
-                  {availableRegions.length > 0 && (
-                    <optgroup label="── Regions ──">
-                      {availableRegions.map((r) => (
-                        <option key={r.name} value={r.name}>{r.name}</option>
-                      ))}
-                    </optgroup>
-                  )}
-                  <optgroup label="── Cities ──">
-                    {availableLocations.map((loc) => (
-                      <option key={loc} value={loc}>{loc}</option>
+            <div className="location-filter-row">
+              <span className="location-filter-icon">📍</span>
+              <select
+                className="location-select"
+                value={locationFilter}
+                onChange={(e) => setLocationFilter(e.target.value)}
+              >
+                <option value="">All locations</option>
+                {availableRegions.length > 0 && (
+                  <optgroup label="── Regions ──">
+                    {availableRegions.map((r) => (
+                      <option key={r.name} value={r.name}>
+                        {r.name}
+                      </option>
                     ))}
                   </optgroup>
-                </select>
-              </div>
-
-              <div className="location-filter-row">
-                <span className="location-filter-icon">💰</span>
-                <select
-                  className="location-select"
-                  value={stageFilter}
-                  onChange={(e) => setStageFilter(e.target.value)}
-                >
-                  <option value="">All stages</option>
-                  {availableStages.map((stage) => (
-                    <option key={stage} value={stage}>{stage}</option>
+                )}
+                <optgroup label="── Cities ──">
+                  {availableLocations.map((loc) => (
+                    <option key={loc} value={loc}>
+                      {loc}
+                    </option>
                   ))}
-                </select>
-              </div>
-
-              <div className="location-filter-row">
-                <span className="location-filter-icon">💼</span>
-                <select
-                  className="location-select"
-                  value={roleFilter}
-                  onChange={(e) => setRoleFilter(e.target.value)}
-                >
-                  <option value="">All roles</option>
-                  {availableRoles.map((role) => (
-                    <option key={role} value={role}>{role}</option>
-                  ))}
-                </select>
-              </div>
+                </optgroup>
+              </select>
             </div>
+
+            <div className="location-filter-row">
+              <span className="location-filter-icon">💰</span>
+              <select
+                className="location-select"
+                value={stageFilter}
+                onChange={(e) => setStageFilter(e.target.value)}
+              >
+                <option value="">All stages</option>
+                {availableStages.map((stage) => (
+                  <option key={stage} value={stage}>
+                    {stage}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="location-filter-row">
+              <span className="location-filter-icon">💼</span>
+              <select
+                className="location-select"
+                value={roleFilter}
+                onChange={(e) => setRoleFilter(e.target.value)}
+              >
+                <option value="">All roles</option>
+                {availableRoles.map((role) => (
+                  <option key={role} value={role}>
+                    {role}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
 
           <button
             type="button"
@@ -325,6 +353,7 @@ function App(): JSX.Element {
               />
             </div>
           )}
+
           {uploadedFileName && (
             <p className="upload-status">
               {uploading ? `Parsing ${uploadedFileName}...` : `Uploaded: ${uploadedFileName}`}
@@ -350,8 +379,8 @@ function App(): JSX.Element {
             </div>
           )}
 
-          {startups.map((startup) => (
-            <article key={startup.id} className="glass-card startup-card">
+          {startups.map((startup, index) => (
+            <article key={startup.id ?? `${startup.name}-${index}`} className="glass-card startup-card">
               <div className="card-top">
                 <h3>{startup.name}</h3>
                 <div className="score-pill">Match {startup.match_score}%</div>
@@ -366,7 +395,15 @@ function App(): JSX.Element {
 
               <p className="startup-description">{startup.description}</p>
 
-              
+              {startup.rag_explanation && (
+                <p
+                  className="rag-explanation"
+                  dangerouslySetInnerHTML={{
+                    __html: highlightQuery(startup.rag_explanation, skills)
+                  }}
+                />
+              )}
+
               {startup.tech_stack && startup.tech_stack.length > 0 && (
                 <div className="info-block">
                   <p><strong>Tech Stack</strong></p>
@@ -389,18 +426,36 @@ function App(): JSX.Element {
                 </div>
               )}
 
-              <div className="info-block">
-                <p><strong>Matched Terms</strong></p>
-                <div className="tag-row">
-                  {startup.matched_terms.map((item) => (
-                    <span key={item} className="soft-tag highlight-tag">{item}</span>
-                  ))}
+              {startup.matched_terms && startup.matched_terms.length > 0 && (
+                <div className="info-block">
+                  <p><strong>Matched Terms</strong></p>
+                  <div className="tag-row">
+                    {startup.matched_terms.map((item) => (
+                      <span key={item} className="soft-tag highlight-tag">{item}</span>
+                    ))}
+                  </div>
                 </div>
-              </div>
+              )}
+
+              {startup.svd_expansion_terms && startup.svd_expansion_terms.length > 0 && (
+                <div className="info-block">
+                  <p><strong>Related Terms Used</strong></p>
+                  <div className="tag-row">
+                    {startup.svd_expansion_terms.map((item) => (
+                      <span key={item} className="soft-tag">{item}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {startup.url && (
-                <a href={startup.url} target="_blank" rel="noreferrer" className="site-link">
-                  Visit company →
+                <a
+                  href={startup.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="site-link"
+                >
+                  Visit website →
                 </a>
               )}
             </article>

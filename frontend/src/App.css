@@ -583,3 +583,53 @@ input {
   font: inherit;
   color: var(--text);
 }
+
+
+.rag-explanation {
+  margin: 0 0 18px 0;
+  color: #2e2e29;
+  line-height: 1.75;
+  font-size: 1rem;
+}
+
+.evidence-block {
+  margin-top: 18px;
+  padding: 16px 18px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.42);
+  border: 1px solid rgba(255, 255, 255, 0.68);
+}
+
+.evidence-title {
+  margin: 0 0 12px 0;
+  color: var(--accent);
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+}
+
+.evidence-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.evidence-item {
+  color: var(--muted);
+  line-height: 1.6;
+  font-size: 0.95rem;
+}
+
+.evidence-label {
+  color: var(--text);
+  font-weight: 700;
+  margin-right: 6px;
+}
+
+
+.highlight-word {
+  color: var(--accent);
+  font-weight: 700;
+}

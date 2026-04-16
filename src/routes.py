@@ -6,6 +6,7 @@ from flask import send_from_directory, request, jsonify
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.decomposition import TruncatedSVD
+from llm_routes import interpret_user_query
 
 try:
     import easyocr
@@ -16,7 +17,7 @@ except ImportError:
 
 from werkzeug.utils import secure_filename
 
-USE_LLM = False
+USE_LLM = True
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
 
 SHORT_ACRONYMS = {"ai", "ml", "ui", "ux", "hr", "vc", "db", "os", "cv", "nlp", "llm", "api"}
@@ -26,9 +27,10 @@ KNOWN_SKILLS = {
     "node.js", "flask", "django", "fastapi", "sql", "postgresql", "mysql",
     "mongodb", "aws", "gcp", "docker", "kubernetes", "pytorch", "tensorflow",
     "machine learning", "deep learning", "nlp", "llm", "data analysis",
-    "pandas", "numpy", "scikit-learn", "opencv", "html", "css", "git",
-    "backend", "frontend", "data structures", "algorithms", "linux", "bash",
-    "r", "matlab", "ai", "ml", "ui", "ux", "api", "cv",
+    "data science", "analytics", "pandas", "numpy", "scikit-learn", "opencv",
+    "html", "css", "git", "backend", "frontend", "data structures",
+    "algorithms", "linux", "bash", "r", "matlab", "ai", "ml", "ui", "ux",
+    "api", "cv", "go", "looker"
 }
 
 QUERY_ALIASES = {
@@ -41,6 +43,10 @@ QUERY_ALIASES = {
     "full-stack": "full stack",
     "ux": "ux ui design product designer user experience",
     "ui": "ui ux design frontend react javascript",
+    "go": "golang",
+    "data science": "data science analytics machine learning python sql pandas numpy looker",
+    "data scientist": "data science analytics machine learning python sql pandas numpy looker",
+    "data analytics": "data analytics analytics sql looker dashboard business intelligence",
 }
 
 ALLOWED_EXPANSION_TERMS = set(KNOWN_SKILLS) | {
@@ -52,6 +58,8 @@ ALLOWED_EXPANSION_TERMS = set(KNOWN_SKILLS) | {
     "machine learning",
     "ai",
     "data science",
+    "analytics",
+    "data analytics",
     "product",
     "marketing",
     "security",
@@ -84,6 +92,7 @@ def get_company_fields(company):
         "description": " ".join([
             company.get("short_description", "") or "",
             company.get("long_description", "") or "",
+            company.get("job_posting_text", "") or "",
         ]).strip(),
         "tags": " ".join([
             normalize_text_list(company.get("tags", [])),
@@ -100,6 +109,7 @@ def get_company_fields(company):
             normalize_text_list(company.get("inferred_roles", [])),
             company.get("short_description", "") or "",
             company.get("long_description", "") or "",
+            company.get("job_posting_text", "") or "",
         ]).strip(),
     }
 
@@ -113,6 +123,8 @@ def get_svd_doc(company):
         company.get("sector", "") or "",
         company.get("subsector", "") or "",
         company.get("short_description", "") or "",
+        company.get("long_description", "") or "",
+        company.get("job_posting_text", "") or "",
     ]).strip().lower()
 
 
@@ -227,22 +239,18 @@ def get_svd_expansion_terms(query, svd_space, top_k=4, min_sim=0.2):
 
 
 def fuzzy_correct_phrase(phrase, vocab, single_word_candidates, multi_word_candidates):
-    """Correct a single phrase (which may contain spaces) against known skills."""
     phrase = phrase.strip().lower()
     if not phrase:
         return phrase
 
-    # 1. Exact match against known multi-word or single-word skills
     if phrase in vocab or phrase in KNOWN_SKILLS or phrase in SHORT_ACRONYMS:
         return phrase
 
-    # 2. Try whole-phrase fuzzy match against multi-word candidates first
     if " " in phrase:
         close = difflib.get_close_matches(phrase, multi_word_candidates, n=1, cutoff=0.72)
         if close:
             return close[0]
 
-    # 3. For single words or unmatched phrases, correct word-by-word
     words = phrase.split()
     corrected = []
     for word in words:
@@ -251,12 +259,12 @@ def fuzzy_correct_phrase(phrase, vocab, single_word_candidates, multi_word_candi
         if word in vocab or word in KNOWN_SKILLS or word in SHORT_ACRONYMS or len(word) <= 1:
             corrected.append(word)
             continue
-        # Prefix match
+
         prefix_matches = [c for c in single_word_candidates if c.startswith(word)]
         if prefix_matches:
             corrected.append(min(prefix_matches, key=len))
             continue
-        # Fuzzy match
+
         close = difflib.get_close_matches(word, single_word_candidates, n=1, cutoff=0.72)
         corrected.append(close[0] if close else word)
 
@@ -264,10 +272,6 @@ def fuzzy_correct_phrase(phrase, vocab, single_word_candidates, multi_word_candi
 
 
 def fuzzy_correct_query(query, svd_space):
-    """
-    Split query on commas so multi-word phrases like 'data analytics' stay together.
-    Each comma-separated phrase is fuzzy-corrected as a unit.
-    """
     if not query or not svd_space:
         return query
 
@@ -307,6 +311,7 @@ def extract_matched_terms(query, company):
         company.get("canonical_name", ""),
         company.get("short_description", ""),
         company.get("long_description", ""),
+        company.get("job_posting_text", ""),
         " ".join(company.get("tags", []) or []),
         " ".join(company.get("categories", []) or []),
         company.get("sector", ""),
@@ -329,6 +334,284 @@ def extract_matched_terms(query, company):
             matched.append(term)
 
     return matched
+
+
+def sentence_chunks(text, max_sentences=2):
+    text = (text or "").strip()
+    if not text:
+        return []
+
+    parts = re.split(r'(?<=[.!?])\s+', text)
+    parts = [p.strip() for p in parts if p.strip()]
+
+    if not parts:
+        return [text]
+
+    chunks = []
+    current = []
+    for part in parts:
+        current.append(part)
+        if len(current) >= max_sentences:
+            chunks.append(" ".join(current).strip())
+            current = []
+
+    if current:
+        chunks.append(" ".join(current).strip())
+
+    return chunks
+
+
+def build_company_chunks(company):
+    chunks = []
+
+    def add_chunk(text, source, label=None):
+        text = (text or "").strip()
+        if text:
+            chunks.append({
+                "source": source,
+                "label": label or source,
+                "text": text
+            })
+
+    add_chunk(company.get("canonical_name", ""), "name", "Company Name")
+
+    for chunk in sentence_chunks(company.get("short_description", ""), max_sentences=1):
+        add_chunk(chunk, "short_description", "Short Description")
+
+    for chunk in sentence_chunks(company.get("long_description", ""), max_sentences=2):
+        add_chunk(chunk, "long_description", "Long Description")
+
+    retrieval_document = (company.get("retrieval_document") or "").strip()
+    if retrieval_document:
+        for chunk in sentence_chunks(retrieval_document, max_sentences=2):
+            add_chunk(chunk, "retrieval_document", "Retrieved Company Profile")
+
+    for skill in company.get("aggregated_skills", []) or []:
+        add_chunk(skill, "skill", "Skill")
+
+    for role in company.get("inferred_roles", []) or []:
+        add_chunk(role, "role", "Role")
+
+    for tag in company.get("tags", []) or []:
+        add_chunk(tag, "tag", "Tag")
+
+    for category in company.get("categories", []) or []:
+        add_chunk(category, "category", "Category")
+
+    add_chunk(company.get("sector", ""), "sector", "Sector")
+    add_chunk(company.get("subsector", ""), "subsector", "Subsector")
+    add_chunk(company.get("location", ""), "location", "Location")
+
+    deduped = []
+    seen = set()
+    for chunk in chunks:
+        key = chunk["text"].strip().lower()
+        if key and key not in seen:
+            deduped.append(chunk)
+            seen.add(key)
+
+    return deduped
+
+
+def retrieve_company_evidence(skills_query, experience_query, interests_query, location_filter, company, top_k=4):
+    chunks = build_company_chunks(company)
+    if not chunks:
+        return []
+
+    query_parts = []
+
+    if skills_query and skills_query.strip():
+        query_parts.append(skills_query.strip())
+
+    if experience_query and experience_query.strip():
+        query_parts.append(experience_query.strip())
+
+    if interests_query and interests_query.strip():
+        query_parts.append(interests_query.strip())
+
+    if location_filter and location_filter.strip():
+        query_parts.append(location_filter.strip())
+
+    query = " ".join(query_parts).strip()
+    if not query:
+        return []
+
+    texts = [chunk["text"] for chunk in chunks]
+    corpus = [query] + texts
+
+    vectorizer = TfidfVectorizer(
+        lowercase=True,
+        stop_words="english",
+        ngram_range=(1, 2),
+        min_df=1,
+        token_pattern=r"(?u)\b\w[\w.+#-]*\b",
+    )
+    matrix = vectorizer.fit_transform(corpus)
+    sims = cosine_similarity(matrix[0:1], matrix[1:]).flatten()
+
+    ranked = []
+    for chunk, score in zip(chunks, sims):
+        if score > 0:
+            ranked.append({
+                "source": chunk["source"],
+                "label": chunk["label"],
+                "text": chunk["text"],
+                "score": round(float(score), 4)
+            })
+
+    source_priority = {
+        "skill": 4,
+        "role": 3,
+        "short_description": 3,
+        "long_description": 2,
+        "retrieval_document": 1,
+        "location": 2 if location_filter else 0,
+        "tag": 0,
+        "category": 0,
+        "sector": 0,
+        "subsector": 0,
+        "name": 0,
+    }
+
+    ranked.sort(
+        key=lambda x: (x["score"], source_priority.get(x["source"], 0)),
+        reverse=True
+    )
+
+    return ranked[:top_k]
+
+def compute_fit_strength(skills_query, experience_query, interests_query, location_filter, company, evidence):
+    score = 0
+
+    has_skill_reason = bool(skills_query) and any(e["source"] == "skill" for e in evidence)
+    has_role_reason = bool(experience_query) and any(e["source"] == "role" for e in evidence)
+    has_interest_reason = bool(interests_query) and any(
+        e["source"] in {"short_description", "long_description"} for e in evidence
+    )
+    has_location_reason = bool(location_filter) and bool(company.get("location"))
+
+    if has_skill_reason:
+        score += 3
+    if has_role_reason:
+        score += 2
+    if has_interest_reason:
+        score += 2
+    if has_location_reason:
+        score += 1
+
+    if score >= 5:
+        return "Very strong fit"
+    elif score >= 3:
+        return "Strong fit"
+    else:
+        return "Weak fit"
+
+def build_rag_explanation(skills_query, experience_query, interests_query, location_filter, company, evidence):
+    company_name = company.get("canonical_name", "This company")
+
+    skills_query = (skills_query or "").strip()
+    experience_query = (experience_query or "").strip()
+    interests_query = (interests_query or "").strip()
+    location_filter = (location_filter or "").strip()
+
+    reasons = []
+
+    skills = [e["text"] for e in evidence if e["source"] == "skill"]
+    roles = [e["text"] for e in evidence if e["source"] == "role"]
+    descriptions = [
+        e["text"] for e in evidence
+        if e["source"] in {"short_description", "long_description"}
+    ]
+
+    def clean_sentence(text):
+        text = (text or "").strip()
+        if not text:
+            return None
+
+        text = re.split(r'(?<=[.!?])\s+', text)[0].strip()
+        text = re.sub(r'[,.!?;:]+$', '', text).strip()
+
+        text = re.sub(
+            rf'^{re.escape(company_name)}\s+(is|serves as)\s+',
+            '',
+            text,
+            flags=re.IGNORECASE
+        ).strip()
+
+        return text or None
+
+    descriptions_clean = [clean_sentence(d) for d in descriptions]
+    descriptions_clean = [d for d in descriptions_clean if d]
+
+    if skills_query and skills:
+        reasons.append(f"it uses {', '.join(skills[:2])}")
+
+    if experience_query and roles:
+        reasons.append(f"it aligns with roles like {', '.join(roles[:2])}")
+
+    if interests_query and descriptions_clean:
+        desc = descriptions_clean[0]
+        desc = desc[0].lower() + desc[1:] if len(desc) > 1 else desc.lower()
+        reasons.append(f"it focuses on {desc}")
+
+    if location_filter:
+        loc_text = (company.get("location") or "").strip()
+        if loc_text:
+            reasons.append(f"is based in {loc_text}")
+
+    if not reasons and descriptions_clean:
+        desc = descriptions_clean[0]
+        desc = desc[0].lower() + desc[1:] if len(desc) > 1 else desc.lower()
+        reasons.append(f"it focuses on {desc}")
+
+    if not reasons:
+        return f"{company_name} could be a potential fit."
+
+    fit_label = compute_fit_strength(
+        skills_query,
+        experience_query,
+        interests_query,
+        location_filter,
+        company,
+        evidence
+    )
+
+    return f"This is a {fit_label.lower()} because " + " and ".join(reasons) + "."
+
+
+def get_company_stage(company):
+    rt = (company.get("funding_summary") or {}).get("latest_round_type")
+    if rt:
+        s = rt.strip()
+        normalized = "Seed" if s.lower().startswith("seed") else s
+        return normalized if normalized in SERIES_STAGES else "Other"
+    if company.get("yc_batch"):
+        return "Seed"
+    return None
+
+
+def expand_with_llm(text, field_type):
+    text = (text or "").strip()
+    if not USE_LLM or not text:
+        return text
+
+    try:
+        parsed = interpret_user_query(text, field_type=field_type)
+        normalized = str(parsed.get("normalized_text", "")).strip()
+        keywords = parsed.get("keywords", [])
+
+        pieces = []
+        if normalized:
+            pieces.append(normalized)
+
+        for kw in keywords:
+            kw = str(kw).strip()
+            if kw and kw not in pieces:
+                pieces.append(kw)
+
+        return " ".join(pieces) if pieces else text
+    except Exception:
+        return text
 
 
 STAGE_ORDER = ["Seed", "Series A", "Series B", "Series C", "Series D", "Series E", "Series F", "Other"]
@@ -360,21 +643,16 @@ LOCATION_REGIONS = {
 SERIES_STAGES = {"Seed", "Series A", "Series B", "Series C", "Series D", "Series E", "Series F"}
 
 
-def get_company_stage(company):
-    """Return the effective funding stage for a company.
-    YC companies without an explicit round are treated as Seed.
-    Anything outside Seed/Series A-F is bucketed as Other."""
-    rt = (company.get("funding_summary") or {}).get("latest_round_type")
-    if rt:
-        s = rt.strip()
-        normalized = "Seed" if s.lower().startswith("seed") else s
-        return normalized if normalized in SERIES_STAGES else "Other"
-    if company.get("yc_batch"):
-        return "Seed"
-    return None
-
-
-def rank_companies(skills_query, experience_query, interests_query, companies, top_k=20, location_filter=None, stage_filter=None, role_filter=None):
+def rank_companies(
+    skills_query,
+    experience_query,
+    interests_query,
+    companies,
+    top_k=20,
+    location_filter=None,
+    stage_filter=None,
+    role_filter=None
+):
     no_query = not skills_query and not experience_query and not interests_query
 
     if no_query and not location_filter and not stage_filter and not role_filter:
@@ -436,10 +714,17 @@ def rank_companies(skills_query, experience_query, interests_query, companies, t
                 "match_score": 0,
                 "matched_terms": [],
                 "svd_expansion_terms": [],
+                "evidence": [],
+                "rag_explanation": "",
             })
         return results
 
     expanded_skills_query, svd_expansion_terms = expand_skills_query(skills_query, SVD_SPACE)
+    llm_experience_query = expand_with_llm(experience_query, "experience")
+    llm_interests_query = expand_with_llm(interests_query, "interests")
+
+    print(f"llm_experience:    {llm_experience_query!r}")
+    print(f"llm_interests:     {llm_interests_query!r}")
 
     print("\n" + "=" * 80)
     print("SEARCH DEBUG")
@@ -470,14 +755,15 @@ def rank_companies(skills_query, experience_query, interests_query, companies, t
             lowercase=True,
             stop_words="english",
             ngram_range=(1, 2),
-            min_df=1
+            min_df=1,
+            token_pattern=r"(?u)\b\w[\w.+#-]*\b",
         )
         matrix = vectorizer.fit_transform(corpus)
         return cosine_similarity(matrix[0:1], matrix[1:]).flatten()
 
     skills_sims = cosine_scores(expanded_skills_query, skills_docs)
-    roles_sims = cosine_scores(experience_query, roles_docs)
-    context_sims = cosine_scores(interests_query, context_docs)
+    roles_sims = cosine_scores(llm_experience_query, roles_docs)
+    context_sims = cosine_scores(llm_interests_query, context_docs)
 
     ranked = []
     for i, company in enumerate(companies):
@@ -500,7 +786,25 @@ def rank_companies(skills_query, experience_query, interests_query, companies, t
 
         if final_score > 0:
             combined_query = " ".join(
-                part for part in [skills_query, experience_query, interests_query] if part.strip()
+                part for part in [skills_query, experience_query, interests_query] if (part or "").strip()
+            ).strip()
+
+            evidence = retrieve_company_evidence(
+                skills_query,
+                llm_experience_query,
+                llm_interests_query,
+                location_filter,
+                company,
+                top_k=4
+            )
+
+            rag_explanation = build_rag_explanation(
+                skills_query,
+                experience_query,
+                interests_query,
+                location_filter,
+                company,
+                evidence
             )
 
             ranked.append({
@@ -520,14 +824,17 @@ def rank_companies(skills_query, experience_query, interests_query, companies, t
                 "match_score": round(final_score * 100, 2),
                 "matched_terms": extract_matched_terms(combined_query, company),
                 "svd_expansion_terms": svd_expansion_terms,
+                "evidence": evidence,
+                "rag_explanation": rag_explanation,
                 "_debug": {
                     "skills_sim": round(float(skills_sims[i]), 4),
                     "roles_sim": round(float(roles_sims[i]), 4),
                     "context_sim": round(float(context_sims[i]), 4),
                     "final_score_raw": round(float(final_score), 4),
                     "tech_stack_text": company_fields[i]["tech_stack"],
-                    "roles_text": company_fields[i]["roles"],
-                    "context_text": context_docs[i][:220]
+                    "roles_text": company_fields[i]["roles"][:200],
+                    "context_text": context_docs[i][:220],
+                    "evidence": evidence,
                 }
             })
 
@@ -542,8 +849,9 @@ def rank_companies(skills_query, experience_query, interests_query, companies, t
         )
         print(f"   matched_terms: {item['matched_terms']}")
         print(f"   tech_stack:    {dbg['tech_stack_text']}")
-        print(f"   roles_text:    {dbg['roles_text'][:180]}")
+        print(f"   roles_text:    {dbg['roles_text']}")
         print(f"   context_text:  {dbg['context_text']}")
+        print(f"   evidence:      {[e['text'] for e in dbg['evidence']]}")
         print()
 
     for item in ranked:
@@ -674,6 +982,7 @@ def register_routes(app):
         location = request.args.get("location", "").strip()
         stage = request.args.get("stage", "").strip()
         role = request.args.get("role", "").strip()
+
         return jsonify(
             rank_companies(
                 skills,
