@@ -8,9 +8,9 @@ logger = logging.getLogger(__name__)
 
 
 def _get_client():
-    api_key = os.getenv("API_KEY")
+    api_key = os.getenv("SPARK_API_KEY")
     if not api_key:
-        raise RuntimeError("API_KEY not set — add it to your .env file")
+        raise RuntimeError("SPARK_API_KEY not set — add it to your .env file")
     return LLMClient(api_key=api_key)
 
 
