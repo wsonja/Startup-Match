@@ -1056,8 +1056,25 @@ def register_routes(app):
             return jsonify({"error": f"Failed to parse image: {str(e)}"}), 500
 
 
+_FIELDS_NEEDED_AFTER_INDEXING = {
+    "_idx", "canonical_name", "website", "short_description", "long_description",
+    "tags", "categories", "sector", "subsector", "location", "city", "state",
+    "country", "yc_batch", "funding_summary", "aggregated_skills", "inferred_roles",
+    "is_yc", "status", "year_founded", "team_size",
+}
+
+
+def _free_index_only_fields(companies):
+    for company in companies:
+        for key in list(company.keys()):
+            if key not in _FIELDS_NEEDED_AFTER_INDEXING:
+                del company[key]
+
+
 # Build all indexes once at startup so requests never pay the fit cost
 print("[startup] Building SVD term space...", flush=True)
 SVD_SPACE = build_svd_term_space(COMPANIES)
 _build_search_index(COMPANIES)
+print("[startup] Freeing index-only fields from memory...", flush=True)
+_free_index_only_fields(COMPANIES)
 print("[startup] App ready to serve requests.", flush=True)
