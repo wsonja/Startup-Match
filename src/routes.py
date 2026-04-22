@@ -71,12 +71,32 @@ ALLOWED_EXPANSION_TERMS = set(KNOWN_SKILLS) | {
 reader = None
 
 
+_TFIDF_PARAMS = dict(
+    lowercase=True,
+    stop_words="english",
+    ngram_range=(1, 2),
+    min_df=1,
+    token_pattern=r"(?u)\b\w[\w.+#-]*\b",
+)
+
+# Pre-built at startup; populated by _build_search_index()
+_COMPANY_FIELDS = None
+_SKILLS_VEC = _SKILLS_MAT = None
+_ROLES_VEC = _ROLES_MAT = None
+_CONTEXT_VEC = _CONTEXT_MAT = None
+_COMPANY_CHUNKS = None
+_EVIDENCE_VEC = _EVIDENCE_MAT = _EVIDENCE_OFFSETS = None
+
+
 def load_companies():
     current_directory = os.path.dirname(os.path.abspath(__file__))
     json_file_path = os.path.join(current_directory, "enriched_init.json")
     with open(json_file_path, "r", encoding="utf-8") as f:
         data = json.load(f)
-    return data["companies"]
+    companies = data["companies"]
+    for i, c in enumerate(companies):
+        c["_idx"] = i
+    return companies
 
 
 COMPANIES = load_companies()
@@ -167,7 +187,7 @@ def build_svd_term_space(companies):
     }
 
 
-SVD_SPACE = build_svd_term_space(COMPANIES)
+SVD_SPACE = None
 
 
 def get_term_vector(term, svd_space):
@@ -413,22 +433,18 @@ def build_company_chunks(company):
     return deduped
 
 
-def retrieve_company_evidence(skills_query, experience_query, interests_query, location_filter, company, top_k=4):
-    chunks = build_company_chunks(company)
+def retrieve_company_evidence(skills_query, experience_query, interests_query, location_filter, company_idx, top_k=4):
+    chunks = _COMPANY_CHUNKS[company_idx]
     if not chunks:
         return []
 
     query_parts = []
-
     if skills_query and skills_query.strip():
         query_parts.append(skills_query.strip())
-
     if experience_query and experience_query.strip():
         query_parts.append(experience_query.strip())
-
     if interests_query and interests_query.strip():
         query_parts.append(interests_query.strip())
-
     if location_filter and location_filter.strip():
         query_parts.append(location_filter.strip())
 
@@ -436,28 +452,9 @@ def retrieve_company_evidence(skills_query, experience_query, interests_query, l
     if not query:
         return []
 
-    texts = [chunk["text"] for chunk in chunks]
-    corpus = [query] + texts
-
-    vectorizer = TfidfVectorizer(
-        lowercase=True,
-        stop_words="english",
-        ngram_range=(1, 2),
-        min_df=1,
-        token_pattern=r"(?u)\b\w[\w.+#-]*\b",
-    )
-    matrix = vectorizer.fit_transform(corpus)
-    sims = cosine_similarity(matrix[0:1], matrix[1:]).flatten()
-
-    ranked = []
-    for chunk, score in zip(chunks, sims):
-        if score > 0:
-            ranked.append({
-                "source": chunk["source"],
-                "label": chunk["label"],
-                "text": chunk["text"],
-                "score": round(float(score), 4)
-            })
+    start, end = _EVIDENCE_OFFSETS[company_idx]
+    q_vec = _EVIDENCE_VEC.transform([query])
+    sims = cosine_similarity(q_vec, _EVIDENCE_MAT[start:end]).flatten()
 
     source_priority = {
         "skill": 4,
@@ -473,12 +470,60 @@ def retrieve_company_evidence(skills_query, experience_query, interests_query, l
         "name": 0,
     }
 
+    ranked = []
+    for chunk, score in zip(chunks, sims):
+        if score > 0:
+            ranked.append({
+                "source": chunk["source"],
+                "label": chunk["label"],
+                "text": chunk["text"],
+                "score": round(float(score), 4)
+            })
+
     ranked.sort(
         key=lambda x: (x["score"], source_priority.get(x["source"], 0)),
         reverse=True
     )
 
     return ranked[:top_k]
+
+
+def _build_search_index(companies):
+    global _COMPANY_FIELDS, _SKILLS_VEC, _SKILLS_MAT, _ROLES_VEC, _ROLES_MAT
+    global _CONTEXT_VEC, _CONTEXT_MAT, _COMPANY_CHUNKS, _EVIDENCE_VEC, _EVIDENCE_MAT, _EVIDENCE_OFFSETS
+
+    print(f"[startup] Building search index for {len(companies)} companies...", flush=True)
+
+    _COMPANY_FIELDS = [get_company_fields(c) for c in companies]
+    skills_docs = [cf["tech_stack"] for cf in _COMPANY_FIELDS]
+    roles_docs = [cf["roles"] for cf in _COMPANY_FIELDS]
+    context_docs = [" ".join([cf["description"], cf["tags"]]).strip() for cf in _COMPANY_FIELDS]
+
+    print("[startup] Fitting TF-IDF vectorizers...", flush=True)
+    _SKILLS_VEC = TfidfVectorizer(**_TFIDF_PARAMS)
+    _SKILLS_MAT = _SKILLS_VEC.fit_transform(skills_docs)
+
+    _ROLES_VEC = TfidfVectorizer(**_TFIDF_PARAMS)
+    _ROLES_MAT = _ROLES_VEC.fit_transform(roles_docs)
+
+    _CONTEXT_VEC = TfidfVectorizer(**_TFIDF_PARAMS)
+    _CONTEXT_MAT = _CONTEXT_VEC.fit_transform(context_docs)
+
+    print("[startup] Building evidence index...", flush=True)
+    _COMPANY_CHUNKS = [build_company_chunks(c) for c in companies]
+    all_texts = []
+    offsets = []
+    offset = 0
+    for chunks in _COMPANY_CHUNKS:
+        texts = [ch["text"] for ch in chunks]
+        all_texts.extend(texts)
+        offsets.append((offset, offset + len(texts)))
+        offset += len(texts)
+
+    _EVIDENCE_OFFSETS = offsets
+    _EVIDENCE_VEC = TfidfVectorizer(**_TFIDF_PARAMS)
+    _EVIDENCE_MAT = _EVIDENCE_VEC.fit_transform(all_texts) if all_texts else None
+    print("[startup] Search index ready.", flush=True)
 
 def compute_fit_strength(skills_query, experience_query, interests_query, location_filter, company, evidence):
     score = 0
@@ -737,33 +782,17 @@ def rank_companies(
     print(f"stage_filter:      {stage_filter!r}")
     print(f"companies searched:{len(companies)} / {original_count}")
 
-    company_fields = [get_company_fields(company) for company in companies]
+    orig_indices = [c["_idx"] for c in companies]
 
-    skills_docs = [cf["tech_stack"] for cf in company_fields]
-    roles_docs = [cf["roles"] for cf in company_fields]
-    context_docs = [
-        " ".join([cf["description"], cf["tags"]]).strip()
-        for cf in company_fields
-    ]
-
-    def cosine_scores(query, docs):
+    def _fast_cosine(query, vec, mat):
         if not query or not query.strip():
-            return [0.0] * len(docs)
+            return [0.0] * len(orig_indices)
+        q_vec = vec.transform([query])
+        return cosine_similarity(q_vec, mat[orig_indices]).flatten()
 
-        corpus = [query] + docs
-        vectorizer = TfidfVectorizer(
-            lowercase=True,
-            stop_words="english",
-            ngram_range=(1, 2),
-            min_df=1,
-            token_pattern=r"(?u)\b\w[\w.+#-]*\b",
-        )
-        matrix = vectorizer.fit_transform(corpus)
-        return cosine_similarity(matrix[0:1], matrix[1:]).flatten()
-
-    skills_sims = cosine_scores(expanded_skills_query, skills_docs)
-    roles_sims = cosine_scores(llm_experience_query, roles_docs)
-    context_sims = cosine_scores(llm_interests_query, context_docs)
+    skills_sims = _fast_cosine(expanded_skills_query, _SKILLS_VEC, _SKILLS_MAT)
+    roles_sims = _fast_cosine(llm_experience_query, _ROLES_VEC, _ROLES_MAT)
+    context_sims = _fast_cosine(llm_interests_query, _CONTEXT_VEC, _CONTEXT_MAT)
 
     ranked = []
     for i, company in enumerate(companies):
@@ -789,12 +818,13 @@ def rank_companies(
                 part for part in [skills_query, experience_query, interests_query] if (part or "").strip()
             ).strip()
 
+            orig_idx = company["_idx"]
             evidence = retrieve_company_evidence(
                 skills_query,
                 llm_experience_query,
                 llm_interests_query,
                 location_filter,
-                company,
+                orig_idx,
                 top_k=4
             )
 
@@ -831,9 +861,9 @@ def rank_companies(
                     "roles_sim": round(float(roles_sims[i]), 4),
                     "context_sim": round(float(context_sims[i]), 4),
                     "final_score_raw": round(float(final_score), 4),
-                    "tech_stack_text": company_fields[i]["tech_stack"],
-                    "roles_text": company_fields[i]["roles"][:200],
-                    "context_text": context_docs[i][:220],
+                    "tech_stack_text": _COMPANY_FIELDS[orig_idx]["tech_stack"],
+                    "roles_text": _COMPANY_FIELDS[orig_idx]["roles"][:200],
+                    "context_text": " ".join([_COMPANY_FIELDS[orig_idx]["description"], _COMPANY_FIELDS[orig_idx]["tags"]]).strip()[:220],
                     "evidence": evidence,
                 }
             })
@@ -1024,3 +1054,10 @@ def register_routes(app):
             return jsonify({"error": str(e)}), 503
         except Exception as e:
             return jsonify({"error": f"Failed to parse image: {str(e)}"}), 500
+
+
+# Build all indexes once at startup so requests never pay the fit cost
+print("[startup] Building SVD term space...", flush=True)
+SVD_SPACE = build_svd_term_space(COMPANIES)
+_build_search_index(COMPANIES)
+print("[startup] App ready to serve requests.", flush=True)
