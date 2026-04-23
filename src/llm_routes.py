@@ -79,11 +79,14 @@ def interpret_user_query(text, field_type="interests"):
                 "}\n"
                 "Rules:\n"
                 "- Correct spelling mistakes.\n"
-                "- Remove filler words.\n"
+                "- Remove filler words and stopwords.\n"
+                "- Remove pronouns, helper verbs, and generic action words unless they are essential domain terms.\n"
+                "- Do not include words like: I, worked, on, in, with, love, interested, using, built, doing.\n"
                 "- Keep only the core user intent.\n"
                 "- keywords should be 3 to 6 concise search terms.\n"
                 "- For interests, include adjacent concepts if strongly relevant.\n"
                 "- For experience, focus on skills, tools, responsibilities, and role-like terms.\n"
+                "- Prefer noun phrases and technical phrases over sentences.\n"
                 "- Do not invent biography details.\n"
             ),
         },
@@ -109,7 +112,7 @@ def interpret_user_query(text, field_type="interests"):
             kw = str(kw).strip()
             if kw and kw not in cleaned_keywords:
                 cleaned_keywords.append(kw)
-
+        logger.warning(f"normtext {normalized_text}, keywords {cleaned_keywords}")
         return {
             "normalized_text": normalized_text,
             "keywords": cleaned_keywords

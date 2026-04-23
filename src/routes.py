@@ -8,7 +8,7 @@ from flask import send_from_directory, request, jsonify
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from werkzeug.utils import secure_filename
-from llm_routes import generate_rag_explanation
+from llm_routes import generate_rag_explanation, interpret_user_query
 
 easyocr = None
 EASYOCR_AVAILABLE = None
@@ -57,6 +57,18 @@ ALLOWED_EXPANSION_TERMS = set(KNOWN_SKILLS) | {
     "frontend software engineer",
     "backend software engineer",
 }
+
+DISPLAY_STOPWORDS = {
+    "i", "me", "my", "we", "our", "you",
+    "a", "an", "the",
+    "and", "or", "but",
+    "on", "in", "at", "to", "for", "of", "with", "by",
+    "is", "are", "was", "were", "be", "been", "being",
+    "worked", "working", "work", "love", "like", "liked",
+    "using", "used", "built", "doing", "interested",
+}
+
+TOKEN_RE = re.compile(r"(?u)\b\w[\w.+#-]*\b")
 
 reader = None
 
@@ -338,41 +350,6 @@ def expand_skills_query(skills_query, svd_space):
     return " ".join(pieces), expansion_terms
 
 
-def extract_matched_terms(query, company):
-    query_lower = (query or "").lower().strip()
-    query_terms = [t.strip(",.;:") for t in query_lower.split() if t.strip(",.;:")]
-
-    searchable_parts = [
-        company.get("canonical_name", ""),
-        company.get("short_description", ""),
-        company.get("long_description", ""),
-        " ".join(company.get("tags", []) or []),
-        " ".join(company.get("categories", []) or []),
-        company.get("sector", ""),
-        company.get("subsector", ""),
-        company.get("location", ""),
-        company.get("country", ""),
-        " ".join(company.get("aggregated_skills", []) or []),
-        " ".join(company.get("inferred_roles", []) or []),
-    ]
-
-    searchable_text = " ".join(str(part or "") for part in searchable_parts).lower()
-    searchable_tokens = set(re.findall(r"(?u)\b\w[\w.+#-]*\b", searchable_text))
-
-    matched = []
-
-    for term in query_terms:
-        if (
-            term in searchable_tokens
-            or f"{term}s" in searchable_tokens
-            or (term.endswith("s") and term[:-1] in searchable_tokens)
-        ):
-            if term not in matched:
-                matched.append(term)
-
-    return matched
-
-
 def get_company_stage(company):
     rt = (company.get("funding_summary") or {}).get("latest_round_type")
     if rt:
@@ -397,7 +374,7 @@ def exact_skill_match_bonus(raw_skills_query, company):
         company.get("long_description", "") or "",
     ]
     searchable_text = " ".join(searchable_parts).lower()
-    searchable_tokens = set(re.findall(r"(?u)\b\w[\w.+#-]*\b", searchable_text))
+    searchable_tokens = set(TOKEN_RE.findall(searchable_text))
 
     bonus = 0.0
     for term in raw_terms:
@@ -412,6 +389,7 @@ def exact_skill_match_bonus(raw_skills_query, company):
             bonus += 0.10
 
     return bonus
+
 
 def get_dimension_top_terms(svd_space, dim_idx, top_n=5):
     if not svd_space:
@@ -438,6 +416,7 @@ def get_dimension_top_terms(svd_space, dim_idx, top_n=5):
 
     return results
 
+
 def label_dimension(top_terms):
     terms = [t["term"].lower() for t in top_terms]
 
@@ -462,13 +441,13 @@ def label_dimension(top_terms):
             scores["Backend / Infra"] += 2
 
         if term in {"api"}:
-            scores["Backend / Infra"] += 1  # weaker signal
+            scores["Backend / Infra"] += 1
 
         if term in {"data", "analytics", "sql", "pandas", "machine learning", "looker"}:
             scores["Data / Analytics"] += 2
 
         if term in {"healthcare", "insurance", "clinical", "fertility"}:
-            scores["Healthcare"] += 3  # strong signal
+            scores["Healthcare"] += 3
 
         if term in {"marketing", "growth", "seo", "brand"}:
             scores["Marketing / Growth"] += 2
@@ -478,11 +457,11 @@ def label_dimension(top_terms):
 
     best_label = max(scores, key=scores.get)
 
-    # fallback if everything is weak
     if scores[best_label] == 0:
         return " / ".join(terms[:2])
 
     return best_label
+
 
 def get_query_dimensions(query, svd_space, top_k=3, top_terms_per_dim=5):
     if not query or not query.strip() or not svd_space:
@@ -517,6 +496,7 @@ def get_query_dimensions(query, svd_space, top_k=3, top_terms_per_dim=5):
 
     return dimensions
 
+
 def split_query_terms(text):
     if not text:
         return []
@@ -529,12 +509,10 @@ def split_query_terms(text):
         if not part:
             continue
 
-        # keep full phrase
         if part not in terms:
             terms.append(part)
 
-        # also keep tokenized pieces
-        for token in re.findall(r"(?u)\b\w[\w.+#-]*\b", part):
+        for token in TOKEN_RE.findall(part):
             if token not in terms:
                 terms.append(token)
 
@@ -542,19 +520,14 @@ def split_query_terms(text):
 
 
 def role_skill_overlap_bonus(skills_query, company):
-    """
-    Big bonus when a skill the user typed appears directly in a role title.
-    This is generic and works for frontend/backend/data/anything else.
-    """
     query_terms = split_query_terms(skills_query)
     if not query_terms:
         return 0.0
 
     role_text = " ".join(company.get("inferred_roles", []) or []).lower()
-    role_tokens = set(re.findall(r"(?u)\b\w[\w.+#-]*\b", role_text))
+    role_tokens = set(TOKEN_RE.findall(role_text))
 
     bonus = 0.0
-    matched_role_terms = []
 
     for term in query_terms:
         term = term.strip().lower()
@@ -569,19 +542,155 @@ def role_skill_overlap_bonus(skills_query, company):
         )
 
         if phrase_match or token_match:
-            matched_role_terms.append(term)
-
-            # phrase-like skills get strongest boost
             if " " in term:
                 bonus += 0.35
-            # acronyms / short skills still important
             elif term in SHORT_ACRONYMS:
                 bonus += 0.25
             else:
                 bonus += 0.30
 
-    # prevent runaway stacking
     return min(bonus, 0.6)
+
+
+def is_strict_comma_list(text):
+    text = (text or "").strip()
+    if not text:
+        return False
+
+    parts = [part.strip() for part in text.split(",")]
+    if not parts or any(not part for part in parts):
+        return False
+
+    for part in parts:
+        words = [w for w in part.split() if w.strip()]
+        if len(words) == 0 or len(words) > 3:
+            return False
+
+    return True
+
+
+def clean_term_list(terms):
+    cleaned = []
+    seen = set()
+
+    for term in terms:
+        term = str(term or "").strip().lower()
+        term = term.strip(",.;:!?()[]{}\"'")
+        if not term:
+            continue
+        if term in DISPLAY_STOPWORDS:
+            continue
+        if len(term) == 1 and term not in SHORT_ACRONYMS:
+            continue
+        if term not in seen:
+            seen.add(term)
+            cleaned.append(term)
+
+    return cleaned
+
+
+def extract_raw_terms_from_sentence(text):
+    tokens = TOKEN_RE.findall((text or "").lower())
+    return clean_term_list(tokens)
+
+
+def build_search_text_from_llm_result(parsed, fallback_text):
+    fallback_text = (fallback_text or "").strip()
+
+    if not isinstance(parsed, dict):
+        return fallback_text
+
+    normalized_text = str(parsed.get("normalized_text", "")).strip()
+    keywords = parsed.get("keywords", [])
+
+    if not isinstance(keywords, list):
+        keywords = []
+
+    pieces = []
+    for part in [normalized_text] + [str(k).strip() for k in keywords]:
+        if part and part not in pieces:
+            pieces.append(part)
+
+    return " ".join(pieces).strip() or fallback_text
+
+
+def build_query_field_payload(text, field_type):
+    text = (text or "").strip()
+    if not text:
+        return {
+            "search_text": "",
+            "raw_terms": [],
+            "llm_terms": [],
+        }
+
+    if is_strict_comma_list(text):
+        structured_terms = clean_term_list(
+            [part.strip().lower() for part in text.split(",") if part.strip()]
+        )
+        return {
+            "search_text": text,
+            "raw_terms": structured_terms,
+            "llm_terms": [],
+        }
+
+    parsed = interpret_user_query(text, field_type=field_type)
+
+    search_text = build_search_text_from_llm_result(parsed, text)
+    raw_terms = extract_raw_terms_from_sentence(text)
+    llm_terms = clean_term_list(parsed.get("keywords", []))
+
+    return {
+        "search_text": search_text,
+        "raw_terms": raw_terms,
+        "llm_terms": llm_terms,
+    }
+
+
+def build_company_search_blob(company):
+    searchable_parts = [
+        company.get("canonical_name", ""),
+        company.get("short_description", ""),
+        company.get("long_description", ""),
+        " ".join(company.get("tags", []) or []),
+        " ".join(company.get("categories", []) or []),
+        company.get("sector", ""),
+        company.get("subsector", ""),
+        company.get("location", ""),
+        company.get("country", ""),
+        " ".join(company.get("aggregated_skills", []) or []),
+        " ".join(company.get("inferred_roles", []) or []),
+    ]
+
+    searchable_text = " ".join(str(part or "") for part in searchable_parts).lower()
+    searchable_tokens = set(TOKEN_RE.findall(searchable_text))
+    return searchable_text, searchable_tokens
+
+
+def term_matches_company(term, searchable_text, searchable_tokens):
+    term = (term or "").strip().lower()
+    if not term:
+        return False
+
+    if " " in term:
+        return term in searchable_text
+
+    return (
+        term in searchable_tokens
+        or f"{term}s" in searchable_tokens
+        or (term.endswith("s") and term[:-1] in searchable_tokens)
+    )
+
+
+def match_terms_against_company(terms, company):
+    searchable_text, searchable_tokens = build_company_search_blob(company)
+
+    matched = []
+    for term in clean_term_list(terms):
+        if term_matches_company(term, searchable_text, searchable_tokens):
+            matched.append(term)
+
+    return matched
+
 
 def rank_companies(
     skills_query,
@@ -599,6 +708,12 @@ def rank_companies(
         return []
 
     original_count = len(companies)
+
+    experience_payload = build_query_field_payload(experience_query, "experience")
+    interests_payload = build_query_field_payload(interests_query, "interests")
+
+    processed_experience_query = experience_payload["search_text"]
+    processed_interests_query = interests_payload["search_text"]
 
     if location_filter:
         region_terms = LOCATION_REGIONS.get(location_filter)
@@ -653,7 +768,9 @@ def rank_companies(
                 "url": company.get("website"),
                 "match_score": 0,
                 "matched_terms": [],
+                "related_terms_used": [],
                 "svd_expansion_terms": [],
+                "svd_dimensions": [],
                 "rag_explanation": "",
             })
         return results
@@ -666,6 +783,12 @@ def rank_companies(
     print(f"skills_query:      {skills_query!r}")
     print(f"experience_query:  {experience_query!r}")
     print(f"interests_query:   {interests_query!r}")
+    print(f"processed_experience_query: {processed_experience_query!r}")
+    print(f"processed_interests_query:  {processed_interests_query!r}")
+    print(f"experience_raw_terms: {experience_payload['raw_terms']}")
+    print(f"interests_raw_terms:  {interests_payload['raw_terms']}")
+    print(f"experience_llm_terms: {experience_payload['llm_terms']}")
+    print(f"interests_llm_terms:  {interests_payload['llm_terms']}")
     print(f"expanded_skills:   {expanded_skills_query!r} (fuzzy+SVD)")
     print(f"svd_expansion:     {svd_expansion_terms}")
     print(f"location_filter:   {location_filter!r}")
@@ -673,8 +796,8 @@ def rank_companies(
     print(f"companies searched:{len(companies)} / {original_count}")
 
     skills_sims = cosine_scores_from_index(expanded_skills_query, SKILLS_INDEX)
-    roles_sims = cosine_scores_from_index(experience_query, ROLES_INDEX)
-    context_sims = cosine_scores_from_index(interests_query, CONTEXT_INDEX)
+    roles_sims = cosine_scores_from_index(processed_experience_query, ROLES_INDEX)
+    context_sims = cosine_scores_from_index(processed_interests_query, CONTEXT_INDEX)
 
     ranked = []
     for company in companies:
@@ -704,8 +827,21 @@ def rank_companies(
             final_score += role_skill_overlap_bonus(skills_query, company)
 
         if final_score > 0:
-            combined_query = " ".join(
-                part for part in [skills_query, experience_query, interests_query] if part.strip()
+            raw_skill_terms = clean_term_list(split_query_terms(skills_query))
+            raw_user_terms = clean_term_list(
+                raw_skill_terms
+                + experience_payload["raw_terms"]
+                + interests_payload["raw_terms"]
+            )
+
+            llm_generated_terms = clean_term_list(
+                experience_payload["llm_terms"] + interests_payload["llm_terms"]
+            )
+
+            raw_matches = match_terms_against_company(raw_user_terms, company)
+            related_terms_used = match_terms_against_company(
+                [term for term in llm_generated_terms if term not in raw_user_terms],
+                company
             )
 
             ranked.append({
@@ -723,7 +859,8 @@ def rank_companies(
                 "keywords": company.get("tags", []) + company.get("categories", []),
                 "url": company.get("website"),
                 "match_score": round(final_score * 100, 2),
-                "matched_terms": extract_matched_terms(combined_query, company),
+                "matched_terms": raw_matches,
+                "related_terms_used": related_terms_used,
                 "svd_expansion_terms": svd_expansion_terms,
                 "svd_dimensions": query_dimensions,
                 "rag_explanation": "",
@@ -735,6 +872,8 @@ def rank_companies(
                     "tech_stack_text": COMPANY_FIELDS[global_i]["tech_stack"],
                     "roles_text": COMPANY_FIELDS[global_i]["roles"],
                     "context_text": CONTEXT_DOCS[global_i][:220],
+                    "raw_user_terms": raw_user_terms,
+                    "llm_generated_terms": llm_generated_terms,
                 }
             })
 
@@ -751,38 +890,16 @@ def rank_companies(
             f"| skills_sim={dbg['skills_sim']} roles_sim={dbg['roles_sim']} context_sim={dbg['context_sim']}"
         )
         print(f"   matched_terms: {item['matched_terms']}")
+        print(f"   related_terms_used: {item['related_terms_used']}")
         print(f"   tech_stack:    {dbg['tech_stack_text']}")
         print(f"   roles_text:    {dbg['roles_text'][:180]}")
         print(f"   context_text:  {dbg['context_text']}")
         print()
 
-    # for item in ranked:
-    #     item.pop("_debug", None)
-
-    # return ranked[:top_k]
-
     top_results = ranked[:top_k]
-
-    # user_query = " ".join(
-    #     part.strip()
-    #     for part in [skills_query, experience_query, interests_query]
-    #     if part and part.strip()
-    # )
-
-    # for i, item in enumerate(top_results):
-    #     if i < 10:
-    #         try:
-    #             item["rag_explanation"] = generate_rag_explanation(item, user_query)
-    #         except Exception:
-    #             item["rag_explanation"] = ""
-    #     else:
-    #         item["rag_explanation"] = ""
-
-    #     item.pop("_debug", None)
 
     for item in top_results:
         item.pop("_debug", None)
-
 
     return top_results
 
@@ -939,14 +1056,13 @@ def register_routes(app):
 
         if not startup:
             return jsonify({"error": "Missing startup"}), 400
-        
 
         try:
             explanation = generate_rag_explanation(startup, user_query)
             return jsonify({"explanation": explanation})
         except Exception:
             return jsonify({"explanation": ""})
-        
+
     @app.route("/api/parse-skills-image", methods=["POST"])
     def parse_skills_image():
         if "image" not in request.files:

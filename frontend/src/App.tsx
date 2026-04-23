@@ -447,6 +447,17 @@ function App(): JSX.Element {
                 </div>
               </div>
 
+              {startup.related_terms_used && startup.related_terms_used.length > 0 && (
+                <div className="info-block">
+                  <p><strong>Related Terms Used</strong></p>
+                  <div className="tag-row">
+                    {startup.related_terms_used.map((item) => (
+                      <span key={item} className="soft-tag">{item}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               <div className="info-block">
                 <p><strong>Why this matches</strong></p>
                 {ragLoading[startup.name] ? (

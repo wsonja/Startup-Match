@@ -24,6 +24,7 @@ export interface Startup {
   url?: string
   match_score: number
   matched_terms: string[]
+  related_terms_used: string[]
   svd_expansion_terms: string[]
   svd_dimensions: SvdDimension[]
   rag_explanation: string
