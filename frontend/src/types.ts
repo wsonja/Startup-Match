@@ -1,3 +1,15 @@
+export interface SvdDimensionTerm {
+  term: string
+  weight: number
+}
+
+export interface SvdDimension {
+  dimension: number
+  label: string
+  score: number
+  top_terms: SvdDimensionTerm[]
+}
+
 export interface Startup {
   id: number
   name: string
@@ -12,4 +24,6 @@ export interface Startup {
   url?: string
   match_score: number
   matched_terms: string[]
+  svd_expansion_terms: string[]
+  svd_dimensions: SvdDimension[]
 }
