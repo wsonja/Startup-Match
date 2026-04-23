@@ -185,3 +185,35 @@ def register_chat_route(app, json_search):
             mimetype="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+    
+def register_llm_test_route(app):
+    @app.route("/api/llm-test", methods=["GET"])
+    def llm_test():
+        try:
+            client = _get_client()
+        except Exception as e:
+            return jsonify({
+                "ok": False,
+                "stage": "client_init",
+                "error": str(e),
+            }), 500
+
+        messages = [
+            {"role": "system", "content": "Reply with exactly: OK"},
+            {"role": "user", "content": "Test"},
+        ]
+
+        try:
+            response = client.chat(messages, stream=False)
+            text = _extract_text_from_response(response)
+            return jsonify({
+                "ok": True,
+                "stage": "chat_complete",
+                "response": text,
+            })
+        except Exception as e:
+            return jsonify({
+                "ok": False,
+                "stage": "chat_call",
+                "error": str(e),
+            }), 500

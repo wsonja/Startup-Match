@@ -4,7 +4,7 @@ from flask import Flask
 from flask_cors import CORS
 
 from routes import register_routes, rank_companies, COMPANIES
-from llm_routes import register_chat_route
+from llm_routes import register_chat_route, register_llm_test_route
 
 load_dotenv()
 
@@ -33,7 +33,9 @@ def json_search(user_message):
 
 
 register_routes(app)
-register_chat_route(app, json_search)
+# register_chat_route(app, json_search)
+register_chat_route(app, lambda user_message: [])
+register_llm_test_route(app)
 
 if __name__ == '__main__':
     app.run(debug=True, host="0.0.0.0", port=5001)
