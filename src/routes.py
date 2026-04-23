@@ -13,7 +13,7 @@ easyocr = None
 EASYOCR_AVAILABLE = None
 
 
-USE_LLM = True
+USE_LLM = False
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
 
 SHORT_ACRONYMS = {"ai", "ml", "ui", "ux", "hr", "vc", "db", "os", "cv", "nlp", "llm", "api"}
@@ -23,10 +23,9 @@ KNOWN_SKILLS = {
     "node.js", "flask", "django", "fastapi", "sql", "postgresql", "mysql",
     "mongodb", "aws", "gcp", "docker", "kubernetes", "pytorch", "tensorflow",
     "machine learning", "deep learning", "nlp", "llm", "data analysis",
-    "data science", "analytics", "pandas", "numpy", "scikit-learn", "opencv",
-    "html", "css", "git", "backend", "frontend", "data structures",
-    "algorithms", "linux", "bash", "r", "matlab", "ai", "ml", "ui", "ux",
-    "api", "cv", "go", "looker"
+    "pandas", "numpy", "scikit-learn", "opencv", "html", "css", "git",
+    "backend", "frontend", "data structures", "algorithms", "linux", "bash",
+    "r", "matlab", "ai", "ml", "ui", "ux", "api", "cv",
 }
 
 QUERY_ALIASES = {
@@ -39,10 +38,6 @@ QUERY_ALIASES = {
     "full-stack": "full stack",
     "ux": "ux ui design product designer user experience",
     "ui": "ui ux design frontend react javascript",
-    "go": "golang",
-    "data science": "data science analytics machine learning python sql pandas numpy looker",
-    "data scientist": "data science analytics machine learning python sql pandas numpy looker",
-    "data analytics": "data analytics analytics sql looker dashboard business intelligence",
 }
 
 ALLOWED_EXPANSION_TERMS = set(KNOWN_SKILLS) | {
@@ -54,8 +49,6 @@ ALLOWED_EXPANSION_TERMS = set(KNOWN_SKILLS) | {
     "machine learning",
     "ai",
     "data science",
-    "analytics",
-    "data analytics",
     "product",
     "marketing",
     "security",
@@ -100,10 +93,7 @@ def load_companies():
     json_file_path = os.path.join(current_directory, "enriched_init.json")
     with open(json_file_path, "r", encoding="utf-8") as f:
         data = json.load(f)
-    companies = data["companies"]
-    for i, c in enumerate(companies):
-        c["_idx"] = i
-    return companies
+    return data["companies"]
 
 
 def normalize_text_list(items):
@@ -116,7 +106,6 @@ def get_company_fields(company):
         "description": " ".join([
             company.get("short_description", "") or "",
             company.get("long_description", "") or "",
-            company.get("job_posting_text", "") or "",
         ]).strip(),
         "tags": " ".join([
             normalize_text_list(company.get("tags", [])),
@@ -133,7 +122,6 @@ def get_company_fields(company):
             normalize_text_list(company.get("inferred_roles", [])),
             company.get("short_description", "") or "",
             company.get("long_description", "") or "",
-            company.get("job_posting_text", "") or "",
         ]).strip(),
     }
 
@@ -147,8 +135,6 @@ def get_svd_doc(company):
         company.get("sector", "") or "",
         company.get("subsector", "") or "",
         company.get("short_description", "") or "",
-        company.get("long_description", "") or "",
-        company.get("job_posting_text", "") or "",
     ]).strip().lower()
 
 
@@ -304,12 +290,10 @@ def fuzzy_correct_phrase(phrase, vocab, single_word_candidates, multi_word_candi
             corrected.append(word)
             continue
 
-
         prefix_matches = [c for c in single_word_candidates if c.startswith(word)]
         if prefix_matches:
             corrected.append(min(prefix_matches, key=len))
             continue
-
 
         close = difflib.get_close_matches(word, single_word_candidates, n=1, cutoff=0.72)
         corrected.append(close[0] if close else word)
@@ -361,7 +345,6 @@ def extract_matched_terms(query, company):
         company.get("canonical_name", ""),
         company.get("short_description", ""),
         company.get("long_description", ""),
-        company.get("job_posting_text", ""),
         " ".join(company.get("tags", []) or []),
         " ".join(company.get("categories", []) or []),
         company.get("sector", ""),
@@ -670,8 +653,6 @@ def rank_companies(
                 "match_score": 0,
                 "matched_terms": [],
                 "svd_expansion_terms": [],
-                "evidence": [],
-                "rag_explanation": "",
             })
         return results
 
@@ -722,26 +703,7 @@ def rank_companies(
 
         if final_score > 0:
             combined_query = " ".join(
-                part for part in [skills_query, experience_query, interests_query] if (part or "").strip()
-            ).strip()
-
-            orig_idx = company["_idx"]
-            evidence = retrieve_company_evidence(
-                skills_query,
-                llm_experience_query,
-                llm_interests_query,
-                location_filter,
-                orig_idx,
-                top_k=4
-            )
-
-            rag_explanation = build_rag_explanation(
-                skills_query,
-                experience_query,
-                interests_query,
-                location_filter,
-                company,
-                evidence
+                part for part in [skills_query, experience_query, interests_query] if part.strip()
             )
 
             ranked.append({
@@ -787,9 +749,8 @@ def rank_companies(
         )
         print(f"   matched_terms: {item['matched_terms']}")
         print(f"   tech_stack:    {dbg['tech_stack_text']}")
-        print(f"   roles_text:    {dbg['roles_text']}")
+        print(f"   roles_text:    {dbg['roles_text'][:180]}")
         print(f"   context_text:  {dbg['context_text']}")
-        print(f"   evidence:      {[e['text'] for e in dbg['evidence']]}")
         print()
 
     for item in ranked:
@@ -930,7 +891,6 @@ def register_routes(app):
         stage = request.args.get("stage", "").strip()
         role = request.args.get("role", "").strip()
 
-
         return jsonify(
             rank_companies(
                 skills,
@@ -972,27 +932,3 @@ def register_routes(app):
             return jsonify({"error": str(e)}), 503
         except Exception as e:
             return jsonify({"error": f"Failed to parse image: {str(e)}"}), 500
-
-
-_FIELDS_NEEDED_AFTER_INDEXING = {
-    "_idx", "canonical_name", "website", "short_description", "long_description",
-    "tags", "categories", "sector", "subsector", "location", "city", "state",
-    "country", "yc_batch", "funding_summary", "aggregated_skills", "inferred_roles",
-    "is_yc", "status", "year_founded", "team_size",
-}
-
-
-def _free_index_only_fields(companies):
-    for company in companies:
-        for key in list(company.keys()):
-            if key not in _FIELDS_NEEDED_AFTER_INDEXING:
-                del company[key]
-
-
-# Build all indexes once at startup so requests never pay the fit cost
-print("[startup] Building SVD term space...", flush=True)
-SVD_SPACE = build_svd_term_space(COMPANIES)
-_build_search_index(COMPANIES)
-print("[startup] Freeing index-only fields from memory...", flush=True)
-_free_index_only_fields(COMPANIES)
-print("[startup] App ready to serve requests.", flush=True)
