@@ -25,6 +25,7 @@ function App(): JSX.Element {
   const [ragExplanations, setRagExplanations] = useState<Record<string, string>>({})
   const [ragLoading, setRagLoading] = useState<Record<string, boolean>>({})
   const fileInputRef = useRef<HTMLInputElement>(null)
+  const [searchLoading, setSearchLoading] = useState<boolean>(false)
 
   useEffect(() => {
     fetch('/api/locations')
@@ -150,12 +151,19 @@ function App(): JSX.Element {
     if (stageFilter.trim()) params.append('stage', stageFilter)
     if (roleFilter.trim()) params.append('role', roleFilter)
 
-    const response = await fetch(`/api/startups?${params.toString()}`)
-    const data: Startup[] = await response.json()
-    setRagExplanations({})
-    setRagLoading({})
-    setStartups(data)
-    setHasSearched(true)
+    setSearchLoading(true)
+
+    try {
+      const response = await fetch(`/api/startups?${params.toString()}`)
+      const data: Startup[] = await response.json()
+
+      setRagExplanations({})
+      setRagLoading({})
+      setStartups(data)
+      setHasSearched(true)
+    } finally {
+      setSearchLoading(false)
+    }
   }
 
   const handleUploadClick = () => {
@@ -299,8 +307,9 @@ function App(): JSX.Element {
               type="button"
               className="search-button"
               onClick={() => handleSearch()}
+              disabled={searchLoading}
             >
-              Search →
+              {searchLoading ? <div className="spinner" /> : 'Search →'}
             </button>
           </div>
 

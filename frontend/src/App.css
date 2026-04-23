@@ -633,3 +633,25 @@ input {
   color: var(--accent);
   font-weight: 700;
 }
+
+.spinner {
+  width: 16px;
+  height: 16px;
+  border: 2px solid rgba(0, 0, 0, 0.2);
+  border-top: 2px solid #000;
+  border-radius: 50%;
+  animation: spin 0.6s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.search-button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 100px;
+}
