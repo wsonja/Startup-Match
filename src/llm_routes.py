@@ -205,7 +205,7 @@ def generate_rag_explanation(startup, user_query):
     
     dimensions_text = "\n".join(
         [
-            f"- {d.get('label', f'Dimension {d.get('dimension')}')}: "
+            f"- {d.get('label', f\"Dimension {d.get('dimension')}\")}: "
             f"{', '.join(t.get('term', '') for t in d.get('top_terms', []))}"
             for d in startup.get("svd_dimensions", [])[:3]
         ]
