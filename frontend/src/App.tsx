@@ -82,45 +82,51 @@ function App(): JSX.Element {
 
     const query = [skills, experience, interests].filter(Boolean).join(' ').trim()
 
-    startups.forEach((startup) => {
-      if (ragExplanations[startup.name] || ragLoading[startup.name]) return
+    const timer = window.setTimeout(() => {
+      const startupsToExplain = startups.slice(0, 20)
 
-      setRagLoading((prev) => ({
-        ...prev,
-        [startup.name]: true,
-      }))
-
-      fetch('/api/rag-explanation', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          startup,
-          query,
-        }),
+      setRagLoading((prev) => {
+        const next = { ...prev }
+        startupsToExplain.forEach((startup) => {
+          if (!ragExplanations[startup.name]) {
+            next[startup.name] = true
+          }
+        })
+        return next
       })
-        .then((res) => res.json())
-        .then((data) => {
-          setRagExplanations((prev) => ({
-            ...prev,
-            [startup.name]: data.explanation || '',
-          }))
+
+      startupsToExplain.forEach((startup) => {
+        if (ragExplanations[startup.name]) return
+
+        fetch('/api/rag-explanation', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ startup, query }),
         })
-        .catch(() => {
-          setRagExplanations((prev) => ({
-            ...prev,
-            [startup.name]: '',
-          }))
-        })
-        .finally(() => {
-          setRagLoading((prev) => ({
-            ...prev,
-            [startup.name]: false,
-          }))
-        })
-    })
-  }, [startups, skills, experience, interests, ragExplanations, ragLoading])
+          .then((res) => res.json())
+          .then((data) => {
+            setRagExplanations((prev) => ({
+              ...prev,
+              [startup.name]: data.explanation || '',
+            }))
+          })
+          .catch(() => {
+            setRagExplanations((prev) => ({
+              ...prev,
+              [startup.name]: '',
+            }))
+          })
+          .finally(() => {
+            setRagLoading((prev) => ({
+              ...prev,
+              [startup.name]: false,
+            }))
+          })
+      })
+    }, 100)
+
+    return () => window.clearTimeout(timer)
+  }, [startups, skills, experience, interests])
 
   const handleSearch = async (skillsOverride?: string): Promise<void> => {
     const s = skillsOverride !== undefined ? skillsOverride : skills
@@ -146,10 +152,10 @@ function App(): JSX.Element {
 
     const response = await fetch(`/api/startups?${params.toString()}`)
     const data: Startup[] = await response.json()
-    setStartups(data)
-    setHasSearched(true)
     setRagExplanations({})
     setRagLoading({})
+    setStartups(data)
+    setHasSearched(true)
   }
 
   const handleUploadClick = () => {

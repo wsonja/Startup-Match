@@ -195,6 +195,23 @@ def cosine_scores_from_index(query, index):
 COMPANIES = load_companies()
 SVD_SPACE = load_svd_space()
 
+def build_company_svd_matrix(companies, svd_space):
+    if not svd_space:
+        return None
+
+    vectorizer = svd_space.get("vectorizer")
+    svd = svd_space.get("svd")
+
+    if vectorizer is None or svd is None:
+        return None
+
+    docs = [get_svd_doc(company) for company in companies]
+    tfidf_matrix = vectorizer.transform(docs)
+    return svd.transform(tfidf_matrix)
+
+
+COMPANY_SVD_MATRIX = build_company_svd_matrix(COMPANIES, SVD_SPACE)
+
 COMPANY_FIELDS = [get_company_fields(company) for company in COMPANIES]
 SKILLS_DOCS = [cf["tech_stack"] for cf in COMPANY_FIELDS]
 ROLES_DOCS = [cf["roles"] for cf in COMPANY_FIELDS]
@@ -462,6 +479,62 @@ def label_dimension(top_terms):
 
     return best_label
 
+def get_svd_query_vector(query, svd_space):
+    if not query or not query.strip() or not svd_space:
+        return None
+
+    vectorizer = svd_space.get("vectorizer")
+    svd = svd_space.get("svd")
+
+    if vectorizer is None or svd is None:
+        return None
+
+    query_tfidf = vectorizer.transform([query])
+    return svd.transform(query_tfidf)[0]
+
+
+def get_overlap_dimensions(query_vec, company_vec, svd_space, top_k=3, top_terms_per_dim=5):
+    if query_vec is None or company_vec is None or not svd_space:
+        return []
+
+    overlap_vec = query_vec * company_vec
+
+    ranked_dims = sorted(
+        range(len(overlap_vec)),
+        key=lambda i: abs(overlap_vec[i]),
+        reverse=True
+    )[:top_k]
+
+    dimensions = []
+    for dim_idx in ranked_dims:
+        score = float(overlap_vec[dim_idx])
+        if abs(score) <= 0:
+            continue
+
+        top_terms = get_dimension_top_terms(svd_space, int(dim_idx), top_n=top_terms_per_dim)
+
+        dimensions.append({
+            "dimension": int(dim_idx),
+            "label": label_dimension(top_terms),
+            "score": round(score, 4),
+            "top_terms": top_terms,
+        })
+
+    return dimensions
+
+
+def get_svd_overlap_score(query_vec, company_vec):
+    if query_vec is None or company_vec is None:
+        return 0.0
+
+    numerator = float((query_vec * company_vec).sum())
+    query_norm = float((query_vec ** 2).sum() ** 0.5)
+    company_norm = float((company_vec ** 2).sum() ** 0.5)
+
+    if query_norm == 0 or company_norm == 0:
+        return 0.0
+
+    return max(0.0, numerator / (query_norm * company_norm))
 
 def get_query_dimensions(query, svd_space, top_k=3, top_terms_per_dim=5):
     if not query or not query.strip() or not svd_space:
@@ -778,6 +851,16 @@ def rank_companies(
     expanded_skills_query, svd_expansion_terms = expand_skills_query(skills_query, SVD_SPACE)
     query_dimensions = get_query_dimensions(expanded_skills_query or skills_query, SVD_SPACE)
 
+    expanded_skills_query, svd_expansion_terms = expand_skills_query(skills_query, SVD_SPACE)
+
+    svd_query = " ".join(
+        part.strip()
+        for part in [expanded_skills_query, processed_experience_query, processed_interests_query]
+        if part and part.strip()
+    )
+
+    query_vec = get_svd_query_vector(svd_query, SVD_SPACE)
+
     print("\n" + "=" * 80)
     print("SEARCH DEBUG")
     print(f"skills_query:      {skills_query!r}")
@@ -822,6 +905,14 @@ def rank_companies(
 
         final_score = (score_sum / weight_sum) if weight_sum > 0 else 0.0
 
+        company_vec = None
+        svd_overlap_score = 0.0
+
+        if COMPANY_SVD_MATRIX is not None and query_vec is not None:
+            company_vec = COMPANY_SVD_MATRIX[global_i]
+            svd_overlap_score = get_svd_overlap_score(query_vec, company_vec)
+            final_score += 0.35 * svd_overlap_score
+
         if skills_query:
             final_score += exact_skill_match_bonus(skills_query, company)
             final_score += role_skill_overlap_bonus(skills_query, company)
@@ -862,7 +953,7 @@ def rank_companies(
                 "matched_terms": raw_matches,
                 "related_terms_used": related_terms_used,
                 "svd_expansion_terms": svd_expansion_terms,
-                "svd_dimensions": query_dimensions,
+                "svd_dimensions": [],
                 "rag_explanation": "",
                 "_debug": {
                     "skills_sim": round(float(skills_sims[global_i]), 4),
@@ -874,6 +965,7 @@ def rank_companies(
                     "context_text": CONTEXT_DOCS[global_i][:220],
                     "raw_user_terms": raw_user_terms,
                     "llm_generated_terms": llm_generated_terms,
+                    "svd_overlap_score": round(float(svd_overlap_score), 4),
                 }
             })
 
@@ -887,7 +979,7 @@ def rank_companies(
         dbg = item["_debug"]
         print(
             f"{idx}. {item['name']} | match={item['match_score']} "
-            f"| skills_sim={dbg['skills_sim']} roles_sim={dbg['roles_sim']} context_sim={dbg['context_sim']}"
+            f"| skills_sim={dbg['skills_sim']} roles_sim={dbg['roles_sim']} context_sim={dbg['context_sim']} svd_overlap={dbg['svd_overlap_score']}"
         )
         print(f"   matched_terms: {item['matched_terms']}")
         print(f"   related_terms_used: {item['related_terms_used']}")
@@ -899,9 +991,18 @@ def rank_companies(
     top_results = ranked[:top_k]
 
     for item in top_results:
+        global_i = COMPANY_INDEX_BY_NAME.get(item["name"])
+
+        if COMPANY_SVD_MATRIX is not None and query_vec is not None and global_i is not None:
+            company_vec = COMPANY_SVD_MATRIX[global_i]
+            item["svd_dimensions"] = get_overlap_dimensions(query_vec, company_vec, SVD_SPACE)
+        else:
+            item["svd_dimensions"] = []
+
         item.pop("_debug", None)
 
     return top_results
+
 
 
 def get_easyocr_reader():
