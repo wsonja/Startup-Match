@@ -448,6 +448,46 @@ function App(): JSX.Element {
                 </div>
               )}
 
+              {startup.svd_dimensions && startup.svd_dimensions.length > 0 && (
+                <div style={{ marginTop: "12px" }}>
+                  <div style={{ fontWeight: 600, marginBottom: "8px" }}>Dimensions</div>
+
+                  {startup.svd_dimensions.slice(0, 3).map((dim) => (
+                    <div
+                      key={dim.dimension}
+                      style={{
+                        border: "1px solid rgba(0,0,0,0.08)",
+                        borderRadius: "12px",
+                        padding: "10px",
+                        marginBottom: "8px",
+                        background: "rgba(255,255,255,0.7)"
+                      }}
+                    >
+                      <div style={{ fontWeight: 500, marginBottom: "6px" }}>
+                        {dim.label} ({dim.score})
+                      </div>
+
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: "6px" }}>
+                        {dim.top_terms.map((item) => (
+                          <span
+                            key={`${dim.dimension}-${item.term}`}
+                            style={{
+                              fontSize: "12px",
+                              padding: "4px 8px",
+                              borderRadius: "999px",
+                              border: "1px solid rgba(0,0,0,0.08)",
+                              background: "white"
+                            }}
+                          >
+                            {item.term} ({item.weight})
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
               {startup.url && (
                 <a
                   href={startup.url}

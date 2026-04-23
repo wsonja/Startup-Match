@@ -1,8 +1,13 @@
-export interface CompanyEvidence {
-  source: string
+export interface SvdDimensionTerm {
+  term: string
+  weight: number
+}
+
+export interface SvdDimension {
+  dimension: number
   label: string
-  text: string
   score: number
+  top_terms: SvdDimensionTerm[]
 }
 
 export interface Startup {
@@ -19,7 +24,6 @@ export interface Startup {
   url?: string
   match_score: number
   matched_terms: string[]
-  svd_expansion_terms?: string[]
-  evidence: CompanyEvidence[]
-  rag_explanation: string
+  svd_expansion_terms: string[]
+  svd_dimensions: SvdDimension[]
 }

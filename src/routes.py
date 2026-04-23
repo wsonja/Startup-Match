@@ -2,20 +2,16 @@ import difflib
 import json
 import os
 import re
+
+import joblib
 from flask import send_from_directory, request, jsonify
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-# from sklearn.decomposition import TruncatedSVD
-import joblib
-
-try:
-    import easyocr
-    EASYOCR_AVAILABLE = True
-except ImportError:
-    easyocr = None
-    EASYOCR_AVAILABLE = False
-
 from werkzeug.utils import secure_filename
+
+easyocr = None
+EASYOCR_AVAILABLE = None
+
 
 USE_LLM = True
 ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
@@ -70,22 +66,33 @@ ALLOWED_EXPANSION_TERMS = set(KNOWN_SKILLS) | {
 
 reader = None
 
+STAGE_ORDER = ["Seed", "Series A", "Series B", "Series C", "Series D", "Series E", "Series F", "Other"]
 
-_TFIDF_PARAMS = dict(
-    lowercase=True,
-    stop_words="english",
-    ngram_range=(1, 2),
-    min_df=1,
-    token_pattern=r"(?u)\b\w[\w.+#-]*\b",
-)
-
-# Pre-built at startup; populated by _build_search_index()
-_COMPANY_FIELDS = None
-_SKILLS_VEC = _SKILLS_MAT = None
-_ROLES_VEC = _ROLES_MAT = None
-_CONTEXT_VEC = _CONTEXT_MAT = None
-_COMPANY_CHUNKS = None
-_EVIDENCE_VEC = _EVIDENCE_MAT = _EVIDENCE_OFFSETS = None
+LOCATION_REGIONS = {
+    "Bay Area": ["san francisco", "palo alto", "mountain view", "berkeley", "oakland", "san jose",
+                 "san mateo", "redwood city", "sunnyvale", "menlo park", "santa clara",
+                 "san carlos", "burlingame", "south san francisco", "foster city",
+                 "emeryville", "san leandro", "cupertino", "pleasanton", "walnut creek",
+                 "newark", "fremont", "milpitas"],
+    "New York": ["new york", "brooklyn", "manhattan", "queens", "bronx", "jersey city", "hoboken"],
+    "Los Angeles": ["los angeles", "santa monica", "west hollywood", "culver city",
+                    "long beach", "pasadena", "el segundo", "venice"],
+    "Seattle": ["seattle", "bellevue", "redmond", "kirkland", "tacoma"],
+    "Boston": ["boston", "cambridge, ma", "somerville", "cambridge, united kingdom"],
+    "Austin": ["austin"],
+    "Chicago": ["chicago"],
+    "London": ["london"],
+    "India": ["india", "bengaluru", "mumbai", "delhi", "hyderabad", "gurugram", "pune", "chennai"],
+    "Canada": ["canada", "toronto", "waterloo", "kitchener", "montreal", "vancouver", "edmonton", "victoria"],
+    "Europe": ["london", "paris", "berlin", "amsterdam", "barcelona", "stockholm", "oslo",
+               "zürich", "zurich", "copenhagen", "munich", "madrid", "warsaw", "kraków", "krakow",
+               "vienna", "brussels", "lisbon", "rome", "milan", "dublin"],
+    "Latin America": ["mexico city", "são paulo", "sao paulo", "santiago", "monterrey",
+                      "bogotá", "bogota", "guadalajara", "buenos aires", "lima",
+                      "medellín", "medellin", "cali", "zapopan", "panama city", "rio de janeiro"],
+    "Southeast Asia": ["singapore", "jakarta", "ho chi minh", "kuala lumpur", "manila", "bangkok", "makati"],
+}
+SERIES_STAGES = {"Seed", "Series A", "Series B", "Series C", "Series D", "Series E", "Series F"}
 
 
 def load_companies():
@@ -97,9 +104,6 @@ def load_companies():
     for i, c in enumerate(companies):
         c["_idx"] = i
     return companies
-
-
-COMPANIES = load_companies()
 
 
 def normalize_text_list(items):
@@ -148,46 +152,6 @@ def get_svd_doc(company):
     ]).strip().lower()
 
 
-# def build_svd_term_space(companies):
-#     docs = [get_svd_doc(company) for company in companies]
-#     docs = [doc for doc in docs if doc.strip()]
-
-#     if len(docs) < 3:
-#         return None
-
-#     vectorizer = TfidfVectorizer(
-#         lowercase=True,
-#         stop_words="english",
-#         ngram_range=(1, 2),
-#         min_df=1,
-#         token_pattern=r"(?u)\b\w[\w.+#-]*\b",
-#     )
-#     X = vectorizer.fit_transform(docs)
-
-#     if X.shape[0] < 3 or X.shape[1] < 3:
-#         return None
-
-#     n_components = min(50, X.shape[0] - 1, X.shape[1] - 1)
-#     if n_components < 2:
-#         return None
-
-#     svd = TruncatedSVD(n_components=n_components, random_state=42)
-#     svd.fit(X)
-
-#     feature_names = vectorizer.get_feature_names_out()
-#     term_vectors = svd.components_.T
-#     vocab = {term: idx for idx, term in enumerate(feature_names)}
-
-#     return {
-#         "vectorizer": vectorizer,
-#         "svd": svd,
-#         "feature_names": feature_names,
-#         "term_vectors": term_vectors,
-#         "vocab": vocab,
-#     }
-
-
-# SVD_SPACE = build_svd_term_space(COMPANIES)
 def load_svd_space():
     current_directory = os.path.dirname(os.path.abspath(__file__))
     path = os.path.join(current_directory, "svd_space.joblib")
@@ -199,7 +163,55 @@ def load_svd_space():
     return joblib.load(path)
 
 
+def build_tfidf_index(docs):
+    cleaned_docs = [(doc or "").strip() for doc in docs]
+    cleaned_docs = [doc if doc else "__empty__" for doc in cleaned_docs]
+
+    vectorizer = TfidfVectorizer(
+        lowercase=True,
+        stop_words="english",
+        ngram_range=(1, 2),
+        min_df=1,
+        token_pattern=r"(?u)\b\w[\w.+#-]*\b",
+    )
+    matrix = vectorizer.fit_transform(cleaned_docs)
+
+    return {
+        "vectorizer": vectorizer,
+        "matrix": matrix,
+    }
+
+
+def cosine_scores_from_index(query, index):
+    if index is None:
+        return []
+
+    if not query or not query.strip():
+        return [0.0] * index["matrix"].shape[0]
+
+    query_vec = index["vectorizer"].transform([query])
+    return cosine_similarity(query_vec, index["matrix"]).flatten()
+
+
+COMPANIES = load_companies()
 SVD_SPACE = load_svd_space()
+
+COMPANY_FIELDS = [get_company_fields(company) for company in COMPANIES]
+SKILLS_DOCS = [cf["tech_stack"] for cf in COMPANY_FIELDS]
+ROLES_DOCS = [cf["roles"] for cf in COMPANY_FIELDS]
+CONTEXT_DOCS = [
+    " ".join([cf["description"], cf["tags"]]).strip()
+    for cf in COMPANY_FIELDS
+]
+
+SKILLS_INDEX = build_tfidf_index(SKILLS_DOCS)
+ROLES_INDEX = build_tfidf_index(ROLES_DOCS)
+CONTEXT_INDEX = build_tfidf_index(CONTEXT_DOCS)
+
+COMPANY_INDEX_BY_NAME = {
+    company.get("canonical_name"): i
+    for i, company in enumerate(COMPANIES)
+}
 
 
 def get_term_vector(term, svd_space):
@@ -292,10 +304,12 @@ def fuzzy_correct_phrase(phrase, vocab, single_word_candidates, multi_word_candi
             corrected.append(word)
             continue
 
+
         prefix_matches = [c for c in single_word_candidates if c.startswith(word)]
         if prefix_matches:
             corrected.append(min(prefix_matches, key=len))
             continue
+
 
         close = difflib.get_close_matches(word, single_word_candidates, n=1, cutoff=0.72)
         corrected.append(close[0] if close else word)
@@ -323,6 +337,10 @@ def expand_skills_query(skills_query, svd_space):
         return "", []
 
     corrected_query = fuzzy_correct_query(skills_query.strip(), svd_space)
+
+    if corrected_query.strip().lower() in SHORT_ACRONYMS:
+        return corrected_query, []
+
     normalized_query = normalize_query_for_svd(corrected_query)
     expansion_terms = get_svd_expansion_terms(normalized_query, svd_space)
 
@@ -371,274 +389,6 @@ def extract_matched_terms(query, company):
     return matched
 
 
-def sentence_chunks(text, max_sentences=2):
-    text = (text or "").strip()
-    if not text:
-        return []
-
-    parts = re.split(r'(?<=[.!?])\s+', text)
-    parts = [p.strip() for p in parts if p.strip()]
-
-    if not parts:
-        return [text]
-
-    chunks = []
-    current = []
-    for part in parts:
-        current.append(part)
-        if len(current) >= max_sentences:
-            chunks.append(" ".join(current).strip())
-            current = []
-
-    if current:
-        chunks.append(" ".join(current).strip())
-
-    return chunks
-
-
-def build_company_chunks(company):
-    chunks = []
-
-    def add_chunk(text, source, label=None):
-        text = (text or "").strip()
-        if text:
-            chunks.append({
-                "source": source,
-                "label": label or source,
-                "text": text
-            })
-
-    add_chunk(company.get("canonical_name", ""), "name", "Company Name")
-
-    for chunk in sentence_chunks(company.get("short_description", ""), max_sentences=1):
-        add_chunk(chunk, "short_description", "Short Description")
-
-    for chunk in sentence_chunks(company.get("long_description", ""), max_sentences=2):
-        add_chunk(chunk, "long_description", "Long Description")
-
-    retrieval_document = (company.get("retrieval_document") or "").strip()
-    if retrieval_document:
-        for chunk in sentence_chunks(retrieval_document, max_sentences=2):
-            add_chunk(chunk, "retrieval_document", "Retrieved Company Profile")
-
-    for skill in company.get("aggregated_skills", []) or []:
-        add_chunk(skill, "skill", "Skill")
-
-    for role in company.get("inferred_roles", []) or []:
-        add_chunk(role, "role", "Role")
-
-    for tag in company.get("tags", []) or []:
-        add_chunk(tag, "tag", "Tag")
-
-    for category in company.get("categories", []) or []:
-        add_chunk(category, "category", "Category")
-
-    add_chunk(company.get("sector", ""), "sector", "Sector")
-    add_chunk(company.get("subsector", ""), "subsector", "Subsector")
-    add_chunk(company.get("location", ""), "location", "Location")
-
-    deduped = []
-    seen = set()
-    for chunk in chunks:
-        key = chunk["text"].strip().lower()
-        if key and key not in seen:
-            deduped.append(chunk)
-            seen.add(key)
-
-    return deduped
-
-
-def retrieve_company_evidence(skills_query, experience_query, interests_query, location_filter, company_idx, top_k=4):
-    chunks = _COMPANY_CHUNKS[company_idx]
-    if not chunks:
-        return []
-
-    query_parts = []
-    if skills_query and skills_query.strip():
-        query_parts.append(skills_query.strip())
-    if experience_query and experience_query.strip():
-        query_parts.append(experience_query.strip())
-    if interests_query and interests_query.strip():
-        query_parts.append(interests_query.strip())
-    if location_filter and location_filter.strip():
-        query_parts.append(location_filter.strip())
-
-    query = " ".join(query_parts).strip()
-    if not query:
-        return []
-
-    start, end = _EVIDENCE_OFFSETS[company_idx]
-    q_vec = _EVIDENCE_VEC.transform([query])
-    sims = cosine_similarity(q_vec, _EVIDENCE_MAT[start:end]).flatten()
-
-    source_priority = {
-        "skill": 4,
-        "role": 3,
-        "short_description": 3,
-        "long_description": 2,
-        "retrieval_document": 1,
-        "location": 2 if location_filter else 0,
-        "tag": 0,
-        "category": 0,
-        "sector": 0,
-        "subsector": 0,
-        "name": 0,
-    }
-
-    ranked = []
-    for chunk, score in zip(chunks, sims):
-        if score > 0:
-            ranked.append({
-                "source": chunk["source"],
-                "label": chunk["label"],
-                "text": chunk["text"],
-                "score": round(float(score), 4)
-            })
-
-    ranked.sort(
-        key=lambda x: (x["score"], source_priority.get(x["source"], 0)),
-        reverse=True
-    )
-
-    return ranked[:top_k]
-
-
-def _build_search_index(companies):
-    global _COMPANY_FIELDS, _SKILLS_VEC, _SKILLS_MAT, _ROLES_VEC, _ROLES_MAT
-    global _CONTEXT_VEC, _CONTEXT_MAT, _COMPANY_CHUNKS, _EVIDENCE_VEC, _EVIDENCE_MAT, _EVIDENCE_OFFSETS
-
-    print(f"[startup] Building search index for {len(companies)} companies...", flush=True)
-
-    _COMPANY_FIELDS = [get_company_fields(c) for c in companies]
-    skills_docs = [cf["tech_stack"] for cf in _COMPANY_FIELDS]
-    roles_docs = [cf["roles"] for cf in _COMPANY_FIELDS]
-    context_docs = [" ".join([cf["description"], cf["tags"]]).strip() for cf in _COMPANY_FIELDS]
-
-    print("[startup] Fitting TF-IDF vectorizers...", flush=True)
-    _SKILLS_VEC = TfidfVectorizer(**_TFIDF_PARAMS)
-    _SKILLS_MAT = _SKILLS_VEC.fit_transform(skills_docs)
-
-    _ROLES_VEC = TfidfVectorizer(**_TFIDF_PARAMS)
-    _ROLES_MAT = _ROLES_VEC.fit_transform(roles_docs)
-
-    _CONTEXT_VEC = TfidfVectorizer(**_TFIDF_PARAMS)
-    _CONTEXT_MAT = _CONTEXT_VEC.fit_transform(context_docs)
-
-    print("[startup] Building evidence index...", flush=True)
-    _COMPANY_CHUNKS = [build_company_chunks(c) for c in companies]
-    all_texts = []
-    offsets = []
-    offset = 0
-    for chunks in _COMPANY_CHUNKS:
-        texts = [ch["text"] for ch in chunks]
-        all_texts.extend(texts)
-        offsets.append((offset, offset + len(texts)))
-        offset += len(texts)
-
-    _EVIDENCE_OFFSETS = offsets
-    _EVIDENCE_VEC = TfidfVectorizer(**_TFIDF_PARAMS)
-    _EVIDENCE_MAT = _EVIDENCE_VEC.fit_transform(all_texts) if all_texts else None
-    print("[startup] Search index ready.", flush=True)
-
-def compute_fit_strength(skills_query, experience_query, interests_query, location_filter, company, evidence):
-    score = 0
-
-    has_skill_reason = bool(skills_query) and any(e["source"] == "skill" for e in evidence)
-    has_role_reason = bool(experience_query) and any(e["source"] == "role" for e in evidence)
-    has_interest_reason = bool(interests_query) and any(
-        e["source"] in {"short_description", "long_description"} for e in evidence
-    )
-    has_location_reason = bool(location_filter) and bool(company.get("location"))
-
-    if has_skill_reason:
-        score += 3
-    if has_role_reason:
-        score += 2
-    if has_interest_reason:
-        score += 2
-    if has_location_reason:
-        score += 1
-
-    if score >= 5:
-        return "Very strong fit"
-    elif score >= 3:
-        return "Strong fit"
-    else:
-        return "Weak fit"
-
-def build_rag_explanation(skills_query, experience_query, interests_query, location_filter, company, evidence):
-    company_name = company.get("canonical_name", "This company")
-
-    skills_query = (skills_query or "").strip()
-    experience_query = (experience_query or "").strip()
-    interests_query = (interests_query or "").strip()
-    location_filter = (location_filter or "").strip()
-
-    reasons = []
-
-    skills = [e["text"] for e in evidence if e["source"] == "skill"]
-    roles = [e["text"] for e in evidence if e["source"] == "role"]
-    descriptions = [
-        e["text"] for e in evidence
-        if e["source"] in {"short_description", "long_description"}
-    ]
-
-    def clean_sentence(text):
-        text = (text or "").strip()
-        if not text:
-            return None
-
-        text = re.split(r'(?<=[.!?])\s+', text)[0].strip()
-        text = re.sub(r'[,.!?;:]+$', '', text).strip()
-
-        text = re.sub(
-            rf'^{re.escape(company_name)}\s+(is|serves as)\s+',
-            '',
-            text,
-            flags=re.IGNORECASE
-        ).strip()
-
-        return text or None
-
-    descriptions_clean = [clean_sentence(d) for d in descriptions]
-    descriptions_clean = [d for d in descriptions_clean if d]
-
-    if skills_query and skills:
-        reasons.append(f"it uses {', '.join(skills[:2])}")
-
-    if experience_query and roles:
-        reasons.append(f"it aligns with roles like {', '.join(roles[:2])}")
-
-    if interests_query and descriptions_clean:
-        desc = descriptions_clean[0]
-        desc = desc[0].lower() + desc[1:] if len(desc) > 1 else desc.lower()
-        reasons.append(f"it focuses on {desc}")
-
-    if location_filter:
-        loc_text = (company.get("location") or "").strip()
-        if loc_text:
-            reasons.append(f"is based in {loc_text}")
-
-    if not reasons and descriptions_clean:
-        desc = descriptions_clean[0]
-        desc = desc[0].lower() + desc[1:] if len(desc) > 1 else desc.lower()
-        reasons.append(f"it focuses on {desc}")
-
-    if not reasons:
-        return f"{company_name} could be a potential fit."
-
-    fit_label = compute_fit_strength(
-        skills_query,
-        experience_query,
-        interests_query,
-        location_filter,
-        company,
-        evidence
-    )
-
-    return f"This is a {fit_label.lower()} because " + " and ".join(reasons) + "."
-
-
 def get_company_stage(company):
     rt = (company.get("funding_summary") or {}).get("latest_round_type")
     if rt:
@@ -649,72 +399,6 @@ def get_company_stage(company):
         return "Seed"
     return None
 
-
-def expand_with_llm(text, field_type):
-    text = (text or "").strip()
-    if not USE_LLM or not text:
-        return text
-
-    try:
-        parsed = interpret_user_query(text, field_type=field_type)
-        normalized = str(parsed.get("normalized_text", "")).strip()
-        keywords = parsed.get("keywords", [])
-
-        pieces = []
-        if normalized:
-            pieces.append(normalized)
-
-        for kw in keywords:
-            kw = str(kw).strip()
-            if kw and kw not in pieces:
-                pieces.append(kw)
-
-        return " ".join(pieces) if pieces else text
-    except Exception:
-        return text
-
-
-STAGE_ORDER = ["Seed", "Series A", "Series B", "Series C", "Series D", "Series E", "Series F", "Other"]
-
-LOCATION_REGIONS = {
-    "Bay Area": ["san francisco", "palo alto", "mountain view", "berkeley", "oakland", "san jose",
-                 "san mateo", "redwood city", "sunnyvale", "menlo park", "santa clara",
-                 "san carlos", "burlingame", "south san francisco", "foster city",
-                 "emeryville", "san leandro", "cupertino", "pleasanton", "walnut creek",
-                 "newark", "fremont", "milpitas"],
-    "New York": ["new york", "brooklyn", "manhattan", "queens", "bronx", "jersey city", "hoboken"],
-    "Los Angeles": ["los angeles", "santa monica", "west hollywood", "culver city",
-                    "long beach", "pasadena", "el segundo", "venice"],
-    "Seattle": ["seattle", "bellevue", "redmond", "kirkland", "tacoma"],
-    "Boston": ["boston", "cambridge, ma", "somerville", "cambridge, united kingdom"],
-    "Austin": ["austin"],
-    "Chicago": ["chicago"],
-    "London": ["london"],
-    "India": ["india", "bengaluru", "mumbai", "delhi", "hyderabad", "gurugram", "pune", "chennai"],
-    "Canada": ["canada", "toronto", "waterloo", "kitchener", "montreal", "vancouver", "edmonton", "victoria"],
-    "Europe": ["london", "paris", "berlin", "amsterdam", "barcelona", "stockholm", "oslo",
-               "zürich", "zurich", "copenhagen", "munich", "madrid", "warsaw", "kraków", "krakow",
-               "vienna", "brussels", "lisbon", "rome", "milan", "dublin"],
-    "Latin America": ["mexico city", "são paulo", "sao paulo", "santiago", "monterrey",
-                      "bogotá", "bogota", "guadalajara", "buenos aires", "lima",
-                      "medellín", "medellin", "cali", "zapopan", "panama city", "rio de janeiro"],
-    "Southeast Asia": ["singapore", "jakarta", "ho chi minh", "kuala lumpur", "manila", "bangkok", "makati"],
-}
-SERIES_STAGES = {"Seed", "Series A", "Series B", "Series C", "Series D", "Series E", "Series F"}
-
-
-def get_company_stage(company):
-    """Return the effective funding stage for a company.
-    YC companies without an explicit round are treated as Seed.
-    Anything outside Seed/Series A-F is bucketed as Other."""
-    rt = (company.get("funding_summary") or {}).get("latest_round_type")
-    if rt:
-        s = rt.strip()
-        normalized = "Seed" if s.lower().startswith("seed") else s
-        return normalized if normalized in SERIES_STAGES else "Other"
-    if company.get("yc_batch"):
-        return "Seed"
-    return None
 
 def exact_skill_match_bonus(raw_skills_query, company):
     raw_terms = [t.strip().lower() for t in raw_skills_query.split() if t.strip()]
@@ -745,8 +429,186 @@ def exact_skill_match_bonus(raw_skills_query, company):
 
     return bonus
 
+def get_dimension_top_terms(svd_space, dim_idx, top_n=5):
+    if not svd_space:
+        return []
 
-def rank_companies(skills_query, experience_query, interests_query, companies, top_k=20, location_filter=None, stage_filter=None, role_filter=None):
+    components = svd_space.get("components")
+    feature_names = svd_space.get("feature_names")
+
+    if components is None or feature_names is None:
+        return []
+
+    if dim_idx < 0 or dim_idx >= components.shape[0]:
+        return []
+
+    weights = components[dim_idx]
+    top_indices = weights.argsort()[::-1][:top_n]
+
+    results = []
+    for idx in top_indices:
+        results.append({
+            "term": feature_names[idx],
+            "weight": round(float(weights[idx]), 4),
+        })
+
+    return results
+
+def label_dimension(top_terms):
+    terms = [t["term"].lower() for t in top_terms]
+
+    scores = {
+        "AI / LLM": 0,
+        "Frontend / UI": 0,
+        "Backend / Infra": 0,
+        "Data / Analytics": 0,
+        "Healthcare": 0,
+        "Marketing / Growth": 0,
+        "Product": 0,
+    }
+
+    for term in terms:
+        if term in {"llm", "nlp", "rag", "transformers", "chatgpt", "ai"}:
+            scores["AI / LLM"] += 2
+
+        if term in {"frontend", "react", "javascript", "typescript", "ui", "css"}:
+            scores["Frontend / UI"] += 2
+
+        if term in {"backend", "infrastructure", "kubernetes", "aws", "docker"}:
+            scores["Backend / Infra"] += 2
+
+        if term in {"api"}:
+            scores["Backend / Infra"] += 1  # weaker signal
+
+        if term in {"data", "analytics", "sql", "pandas", "machine learning", "looker"}:
+            scores["Data / Analytics"] += 2
+
+        if term in {"healthcare", "insurance", "clinical", "fertility"}:
+            scores["Healthcare"] += 3  # strong signal
+
+        if term in {"marketing", "growth", "seo", "brand"}:
+            scores["Marketing / Growth"] += 2
+
+        if term in {"product", "manager"}:
+            scores["Product"] += 2
+
+    best_label = max(scores, key=scores.get)
+
+    # fallback if everything is weak
+    if scores[best_label] == 0:
+        return " / ".join(terms[:2])
+
+    return best_label
+
+def get_query_dimensions(query, svd_space, top_k=3, top_terms_per_dim=5):
+    if not query or not query.strip() or not svd_space:
+        return []
+
+    vectorizer = svd_space.get("vectorizer")
+    svd = svd_space.get("svd")
+    components = svd_space.get("components")
+
+    if vectorizer is None or svd is None or components is None:
+        return []
+
+    query_vec = vectorizer.transform([query])
+    query_svd = svd.transform(query_vec)[0]
+
+    ranked_dims = query_svd.argsort()[::-1][:top_k]
+
+    dimensions = []
+    for dim_idx in ranked_dims:
+        score = float(query_svd[dim_idx])
+        if score <= 0:
+            continue
+
+        top_terms = get_dimension_top_terms(svd_space, int(dim_idx), top_n=top_terms_per_dim)
+
+        dimensions.append({
+            "dimension": int(dim_idx),
+            "label": label_dimension(top_terms),
+            "score": round(score, 4),
+            "top_terms": top_terms,
+        })
+
+    return dimensions
+
+def split_query_terms(text):
+    if not text:
+        return []
+
+    parts = re.split(r"[,\n/]+", text.lower())
+    terms = []
+
+    for part in parts:
+        part = part.strip()
+        if not part:
+            continue
+
+        # keep full phrase
+        if part not in terms:
+            terms.append(part)
+
+        # also keep tokenized pieces
+        for token in re.findall(r"(?u)\b\w[\w.+#-]*\b", part):
+            if token not in terms:
+                terms.append(token)
+
+    return terms
+
+
+def role_skill_overlap_bonus(skills_query, company):
+    """
+    Big bonus when a skill the user typed appears directly in a role title.
+    This is generic and works for frontend/backend/data/anything else.
+    """
+    query_terms = split_query_terms(skills_query)
+    if not query_terms:
+        return 0.0
+
+    role_text = " ".join(company.get("inferred_roles", []) or []).lower()
+    role_tokens = set(re.findall(r"(?u)\b\w[\w.+#-]*\b", role_text))
+
+    bonus = 0.0
+    matched_role_terms = []
+
+    for term in query_terms:
+        term = term.strip().lower()
+        if not term:
+            continue
+
+        phrase_match = term in role_text
+        token_match = (
+            term in role_tokens
+            or f"{term}s" in role_tokens
+            or (term.endswith("s") and term[:-1] in role_tokens)
+        )
+
+        if phrase_match or token_match:
+            matched_role_terms.append(term)
+
+            # phrase-like skills get strongest boost
+            if " " in term:
+                bonus += 0.35
+            # acronyms / short skills still important
+            elif term in SHORT_ACRONYMS:
+                bonus += 0.25
+            else:
+                bonus += 0.30
+
+    # prevent runaway stacking
+    return min(bonus, 0.6)
+
+def rank_companies(
+    skills_query,
+    experience_query,
+    interests_query,
+    companies,
+    top_k=20,
+    location_filter=None,
+    stage_filter=None,
+    role_filter=None
+):
     no_query = not skills_query and not experience_query and not interests_query
 
     if no_query and not location_filter and not stage_filter and not role_filter:
@@ -814,11 +676,7 @@ def rank_companies(skills_query, experience_query, interests_query, companies, t
         return results
 
     expanded_skills_query, svd_expansion_terms = expand_skills_query(skills_query, SVD_SPACE)
-    llm_experience_query = expand_with_llm(experience_query, "experience")
-    llm_interests_query = expand_with_llm(interests_query, "interests")
-
-    print(f"llm_experience:    {llm_experience_query!r}")
-    print(f"llm_interests:     {llm_interests_query!r}")
+    query_dimensions = get_query_dimensions(expanded_skills_query or skills_query, SVD_SPACE)
 
     print("\n" + "=" * 80)
     print("SEARCH DEBUG")
@@ -831,40 +689,36 @@ def rank_companies(skills_query, experience_query, interests_query, companies, t
     print(f"stage_filter:      {stage_filter!r}")
     print(f"companies searched:{len(companies)} / {original_count}")
 
-    orig_indices = [c["_idx"] for c in companies]
-
-    def _fast_cosine(query, vec, mat):
-        if not query or not query.strip():
-            return [0.0] * len(orig_indices)
-        q_vec = vec.transform([query])
-        return cosine_similarity(q_vec, mat[orig_indices]).flatten()
-
-    skills_sims = cosine_scores(expanded_skills_query, skills_docs)
-    roles_sims = cosine_scores(experience_query, roles_docs)
-    context_sims = cosine_scores(interests_query, context_docs)
-    
+    skills_sims = cosine_scores_from_index(expanded_skills_query, SKILLS_INDEX)
+    roles_sims = cosine_scores_from_index(experience_query, ROLES_INDEX)
+    context_sims = cosine_scores_from_index(interests_query, CONTEXT_INDEX)
 
     ranked = []
-    for i, company in enumerate(companies):
+    for company in companies:
+        global_i = COMPANY_INDEX_BY_NAME.get(company.get("canonical_name"))
+        if global_i is None:
+            continue
+
         score_sum = 0.0
         weight_sum = 0.0
 
         if skills_query:
-            score_sum += 3.0 * skills_sims[i]
+            score_sum += 3.0 * skills_sims[global_i]
             weight_sum += 3.0
 
         if experience_query:
-            score_sum += 2.0 * roles_sims[i]
+            score_sum += 2.0 * roles_sims[global_i]
             weight_sum += 2.0
 
         if interests_query:
-            score_sum += 1.0 * context_sims[i]
+            score_sum += 1.0 * context_sims[global_i]
             weight_sum += 1.0
 
         final_score = (score_sum / weight_sum) if weight_sum > 0 else 0.0
 
         if skills_query:
             final_score += exact_skill_match_bonus(skills_query, company)
+            final_score += role_skill_overlap_bonus(skills_query, company)
 
         if final_score > 0:
             combined_query = " ".join(
@@ -907,21 +761,22 @@ def rank_companies(skills_query, experience_query, interests_query, companies, t
                 "match_score": round(final_score * 100, 2),
                 "matched_terms": extract_matched_terms(combined_query, company),
                 "svd_expansion_terms": svd_expansion_terms,
-                "evidence": evidence,
-                "rag_explanation": rag_explanation,
+                "svd_dimensions": query_dimensions,
                 "_debug": {
-                    "skills_sim": round(float(skills_sims[i]), 4),
-                    "roles_sim": round(float(roles_sims[i]), 4),
-                    "context_sim": round(float(context_sims[i]), 4),
+                    "skills_sim": round(float(skills_sims[global_i]), 4),
+                    "roles_sim": round(float(roles_sims[global_i]), 4),
+                    "context_sim": round(float(context_sims[global_i]), 4),
                     "final_score_raw": round(float(final_score), 4),
-                    "tech_stack_text": _COMPANY_FIELDS[orig_idx]["tech_stack"],
-                    "roles_text": _COMPANY_FIELDS[orig_idx]["roles"][:200],
-                    "context_text": " ".join([_COMPANY_FIELDS[orig_idx]["description"], _COMPANY_FIELDS[orig_idx]["tags"]]).strip()[:220],
-                    "evidence": evidence,
+                    "tech_stack_text": COMPANY_FIELDS[global_i]["tech_stack"],
+                    "roles_text": COMPANY_FIELDS[global_i]["roles"],
+                    "context_text": CONTEXT_DOCS[global_i][:220],
                 }
             })
 
-    ranked.sort(key=lambda x: x["match_score"], reverse=True)
+    ranked.sort(
+        key=lambda x: (len(x["matched_terms"]), x["match_score"]),
+        reverse=True
+    )
 
     print("\nTOP RESULTS")
     for idx, item in enumerate(ranked[:5], start=1):
@@ -944,7 +799,16 @@ def rank_companies(skills_query, experience_query, interests_query, companies, t
 
 
 def get_easyocr_reader():
-    global reader
+    global reader, easyocr, EASYOCR_AVAILABLE
+
+    if EASYOCR_AVAILABLE is None:
+        try:
+            import easyocr as easyocr_module
+            easyocr = easyocr_module
+            EASYOCR_AVAILABLE = True
+        except ImportError:
+            EASYOCR_AVAILABLE = False
+            easyocr = None
 
     if not EASYOCR_AVAILABLE:
         raise RuntimeError("easyocr module not installed. Install with 'pip install easyocr'.")
@@ -1065,6 +929,7 @@ def register_routes(app):
         location = request.args.get("location", "").strip()
         stage = request.args.get("stage", "").strip()
         role = request.args.get("role", "").strip()
+
 
         return jsonify(
             rank_companies(

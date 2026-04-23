@@ -65,6 +65,8 @@ def build_svd_term_space(companies):
         "feature_names": feature_names,
         "term_vectors": term_vectors,
         "vocab": vocab,
+        "components": svd.components_,
+        "n_components": n_components,
     }
 
 
