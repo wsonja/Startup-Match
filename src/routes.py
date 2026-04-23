@@ -5,8 +5,8 @@ import re
 from flask import send_from_directory, request, jsonify
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.decomposition import TruncatedSVD
-from llm_routes import interpret_user_query
+# from sklearn.decomposition import TruncatedSVD
+import joblib
 
 try:
     import easyocr
@@ -148,46 +148,58 @@ def get_svd_doc(company):
     ]).strip().lower()
 
 
-def build_svd_term_space(companies):
-    docs = [get_svd_doc(company) for company in companies]
-    docs = [doc for doc in docs if doc.strip()]
+# def build_svd_term_space(companies):
+#     docs = [get_svd_doc(company) for company in companies]
+#     docs = [doc for doc in docs if doc.strip()]
 
-    if len(docs) < 3:
+#     if len(docs) < 3:
+#         return None
+
+#     vectorizer = TfidfVectorizer(
+#         lowercase=True,
+#         stop_words="english",
+#         ngram_range=(1, 2),
+#         min_df=1,
+#         token_pattern=r"(?u)\b\w[\w.+#-]*\b",
+#     )
+#     X = vectorizer.fit_transform(docs)
+
+#     if X.shape[0] < 3 or X.shape[1] < 3:
+#         return None
+
+#     n_components = min(50, X.shape[0] - 1, X.shape[1] - 1)
+#     if n_components < 2:
+#         return None
+
+#     svd = TruncatedSVD(n_components=n_components, random_state=42)
+#     svd.fit(X)
+
+#     feature_names = vectorizer.get_feature_names_out()
+#     term_vectors = svd.components_.T
+#     vocab = {term: idx for idx, term in enumerate(feature_names)}
+
+#     return {
+#         "vectorizer": vectorizer,
+#         "svd": svd,
+#         "feature_names": feature_names,
+#         "term_vectors": term_vectors,
+#         "vocab": vocab,
+#     }
+
+
+# SVD_SPACE = build_svd_term_space(COMPANIES)
+def load_svd_space():
+    current_directory = os.path.dirname(os.path.abspath(__file__))
+    path = os.path.join(current_directory, "svd_space.joblib")
+
+    if not os.path.exists(path):
+        print("WARNING: svd_space.joblib not found. SVD expansion disabled.")
         return None
 
-    vectorizer = TfidfVectorizer(
-        lowercase=True,
-        stop_words="english",
-        ngram_range=(1, 2),
-        min_df=1,
-        token_pattern=r"(?u)\b\w[\w.+#-]*\b",
-    )
-    X = vectorizer.fit_transform(docs)
-
-    if X.shape[0] < 3 or X.shape[1] < 3:
-        return None
-
-    n_components = min(50, X.shape[0] - 1, X.shape[1] - 1)
-    if n_components < 2:
-        return None
-
-    svd = TruncatedSVD(n_components=n_components, random_state=42)
-    svd.fit(X)
-
-    feature_names = vectorizer.get_feature_names_out()
-    term_vectors = svd.components_.T
-    vocab = {term: idx for idx, term in enumerate(feature_names)}
-
-    return {
-        "vectorizer": vectorizer,
-        "svd": svd,
-        "feature_names": feature_names,
-        "term_vectors": term_vectors,
-        "vocab": vocab,
-    }
+    return joblib.load(path)
 
 
-SVD_SPACE = None
+SVD_SPACE = load_svd_space()
 
 
 def get_term_vector(term, svd_space):
@@ -343,15 +355,18 @@ def extract_matched_terms(query, company):
     ]
 
     searchable_text = " ".join(str(part or "") for part in searchable_parts).lower()
+    searchable_tokens = set(re.findall(r"(?u)\b\w[\w.+#-]*\b", searchable_text))
 
     matched = []
 
-    if query_lower and query_lower in searchable_text:
-        matched.append(query_lower)
-
     for term in query_terms:
-        if term in searchable_text and term not in matched:
-            matched.append(term)
+        if (
+            term in searchable_tokens
+            or f"{term}s" in searchable_tokens
+            or (term.endswith("s") and term[:-1] in searchable_tokens)
+        ):
+            if term not in matched:
+                matched.append(term)
 
     return matched
 
@@ -688,16 +703,50 @@ LOCATION_REGIONS = {
 SERIES_STAGES = {"Seed", "Series A", "Series B", "Series C", "Series D", "Series E", "Series F"}
 
 
-def rank_companies(
-    skills_query,
-    experience_query,
-    interests_query,
-    companies,
-    top_k=20,
-    location_filter=None,
-    stage_filter=None,
-    role_filter=None
-):
+def get_company_stage(company):
+    """Return the effective funding stage for a company.
+    YC companies without an explicit round are treated as Seed.
+    Anything outside Seed/Series A-F is bucketed as Other."""
+    rt = (company.get("funding_summary") or {}).get("latest_round_type")
+    if rt:
+        s = rt.strip()
+        normalized = "Seed" if s.lower().startswith("seed") else s
+        return normalized if normalized in SERIES_STAGES else "Other"
+    if company.get("yc_batch"):
+        return "Seed"
+    return None
+
+def exact_skill_match_bonus(raw_skills_query, company):
+    raw_terms = [t.strip().lower() for t in raw_skills_query.split() if t.strip()]
+    if not raw_terms:
+        return 0.0
+
+    searchable_parts = [
+        " ".join(company.get("aggregated_skills", []) or []),
+        " ".join(company.get("tags", []) or []),
+        " ".join(company.get("categories", []) or []),
+        company.get("short_description", "") or "",
+        company.get("long_description", "") or "",
+    ]
+    searchable_text = " ".join(searchable_parts).lower()
+    searchable_tokens = set(re.findall(r"(?u)\b\w[\w.+#-]*\b", searchable_text))
+
+    bonus = 0.0
+    for term in raw_terms:
+        if term in searchable_tokens:
+            if term in SHORT_ACRONYMS:
+                bonus += 0.12
+            else:
+                bonus += 0.08
+        elif term.endswith("s") and term[:-1] in searchable_tokens:
+            bonus += 0.10
+        elif f"{term}s" in searchable_tokens:
+            bonus += 0.10
+
+    return bonus
+
+
+def rank_companies(skills_query, experience_query, interests_query, companies, top_k=20, location_filter=None, stage_filter=None, role_filter=None):
     no_query = not skills_query and not experience_query and not interests_query
 
     if no_query and not location_filter and not stage_filter and not role_filter:
@@ -790,9 +839,10 @@ def rank_companies(
         q_vec = vec.transform([query])
         return cosine_similarity(q_vec, mat[orig_indices]).flatten()
 
-    skills_sims = _fast_cosine(expanded_skills_query, _SKILLS_VEC, _SKILLS_MAT)
-    roles_sims = _fast_cosine(llm_experience_query, _ROLES_VEC, _ROLES_MAT)
-    context_sims = _fast_cosine(llm_interests_query, _CONTEXT_VEC, _CONTEXT_MAT)
+    skills_sims = cosine_scores(expanded_skills_query, skills_docs)
+    roles_sims = cosine_scores(experience_query, roles_docs)
+    context_sims = cosine_scores(interests_query, context_docs)
+    
 
     ranked = []
     for i, company in enumerate(companies):
@@ -812,6 +862,9 @@ def rank_companies(
             weight_sum += 1.0
 
         final_score = (score_sum / weight_sum) if weight_sum > 0 else 0.0
+
+        if skills_query:
+            final_score += exact_skill_match_bonus(skills_query, company)
 
         if final_score > 0:
             combined_query = " ".join(
