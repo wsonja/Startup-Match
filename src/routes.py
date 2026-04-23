@@ -58,6 +58,29 @@ ALLOWED_EXPANSION_TERMS = set(KNOWN_SKILLS) | {
     "backend software engineer",
 }
 
+DIMENSION_LABELS = {
+    "0": "Backend Operations Engineering",
+    "1": "Social Media Marketing",
+    "2": "Marketing Product Assistant",
+    "3": "AI Developer Tools",
+    "4": "Social Media Analytics",
+    "5": "Digital Mental Health",
+    "6": "Software Engineering Operations",
+    "7": "Open Source Data Tools",
+    "8": "Generative AI Assistant",
+    "9": "AI Data Engineering",
+    "10": "E-commerce Logistics Operations",
+    "11": "B2B Product Design",
+    "12": "Proptech Marketplace Design",
+    "13": "Web3 Consumer Fintech",
+    "14": "Mobile Gaming Advertising",
+    "15": "Web3 Fintech Intelligence",
+    "16": "AI Finance Intelligence",
+    "17": "Fintech Marketplace Operations",
+    "18": "Fintech Product Management",
+    "19": "Open Source Intelligence"
+}
+
 DISPLAY_STOPWORDS = {
     "i", "me", "my", "we", "our", "you",
     "a", "an", "the",
@@ -434,50 +457,14 @@ def get_dimension_top_terms(svd_space, dim_idx, top_n=5):
     return results
 
 
-def label_dimension(top_terms):
+def label_dimension(top_terms, dim_idx=None):
+    if dim_idx is not None:
+        label = DIMENSION_LABELS.get(dim_idx) or DIMENSION_LABELS.get(str(dim_idx))
+        if label:
+            return label
+
     terms = [t["term"].lower() for t in top_terms]
-
-    scores = {
-        "AI / LLM": 0,
-        "Frontend / UI": 0,
-        "Backend / Infra": 0,
-        "Data / Analytics": 0,
-        "Healthcare": 0,
-        "Marketing / Growth": 0,
-        "Product": 0,
-    }
-
-    for term in terms:
-        if term in {"llm", "nlp", "rag", "transformers", "chatgpt", "ai"}:
-            scores["AI / LLM"] += 2
-
-        if term in {"frontend", "react", "javascript", "typescript", "ui", "css"}:
-            scores["Frontend / UI"] += 2
-
-        if term in {"backend", "infrastructure", "kubernetes", "aws", "docker"}:
-            scores["Backend / Infra"] += 2
-
-        if term in {"api"}:
-            scores["Backend / Infra"] += 1
-
-        if term in {"data", "analytics", "sql", "pandas", "machine learning", "looker"}:
-            scores["Data / Analytics"] += 2
-
-        if term in {"healthcare", "insurance", "clinical", "fertility"}:
-            scores["Healthcare"] += 3
-
-        if term in {"marketing", "growth", "seo", "brand"}:
-            scores["Marketing / Growth"] += 2
-
-        if term in {"product", "manager"}:
-            scores["Product"] += 2
-
-    best_label = max(scores, key=scores.get)
-
-    if scores[best_label] == 0:
-        return " / ".join(terms[:2])
-
-    return best_label
+    return " / ".join(terms[:2])
 
 def get_svd_query_vector(query, svd_space):
     if not query or not query.strip() or not svd_space:
@@ -515,10 +502,12 @@ def get_overlap_dimensions(query_vec, company_vec, svd_space, top_k=3, top_terms
 
         dimensions.append({
             "dimension": int(dim_idx),
-            "label": label_dimension(top_terms),
+            "label": label_dimension(top_terms, int(dim_idx)),
             "score": round(score, 4),
             "top_terms": top_terms,
         })
+
+        print("DIM IDX:", dim_idx, "LABEL:", DIMENSION_LABELS.get(str(dim_idx)))
 
     return dimensions
 
@@ -562,7 +551,7 @@ def get_query_dimensions(query, svd_space, top_k=3, top_terms_per_dim=5):
 
         dimensions.append({
             "dimension": int(dim_idx),
-            "label": label_dimension(top_terms),
+            "label": label_dimension(top_terms, int(dim_idx)),
             "score": round(score, 4),
             "top_terms": top_terms,
         })

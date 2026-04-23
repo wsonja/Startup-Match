@@ -48,7 +48,7 @@ def build_svd_term_space(companies):
     if X.shape[0] < 3 or X.shape[1] < 3:
         raise ValueError(f"Matrix too small for SVD: shape={X.shape}")
 
-    n_components = min(50, X.shape[0] - 1, X.shape[1] - 1)
+    n_components = min(20, X.shape[0] - 1, X.shape[1] - 1)
     if n_components < 2:
         raise ValueError(f"n_components too small: {n_components}")
 
