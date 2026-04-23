@@ -27,4 +27,4 @@ COPY src/ $CONTAINER_HOME/src/
 
 COPY --from=frontend-build /app/frontend/dist $CONTAINER_HOME/frontend/dist
 
-CMD ["gunicorn", "--chdir", "src", "app:app", "--bind", "0.0.0.0:5000"]
+CMD ["python", "-m", "gunicorn", "--chdir", "src", "app:app", "--bind", "0.0.0.0:5000", "--log-level", "debug"]
