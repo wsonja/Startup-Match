@@ -15,7 +15,7 @@ EASYOCR_AVAILABLE = None
 
 
 USE_LLM = False
-ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp"}
+ALLOWED_EXTENSIONS = {"png", "jpg", "jpeg", "webp", "pdf"}
 
 SHORT_ACRONYMS = {"ai", "ml", "ui", "ux", "hr", "vc", "db", "os", "cv", "nlp", "llm", "api"}
 
@@ -1055,6 +1055,20 @@ def extract_text_from_image(image_path):
     results = reader.readtext(image_path, detail=0)
     return " ".join(results)
 
+def extract_text_from_pdf(pdf_path):
+    import fitz
+
+    doc = fitz.open(pdf_path)
+    text_parts = []
+
+    for page in doc:
+        text = page.get_text()
+        if text:
+            text_parts.append(text)
+
+    doc.close()
+    return " ".join(text_parts)
+
 
 def register_routes(app):
     upload_folder = os.path.join(os.getcwd(), "uploads")
@@ -1156,7 +1170,7 @@ def register_routes(app):
     @app.route("/api/parse-skills-image", methods=["POST"])
     def parse_skills_image():
         if "image" not in request.files:
-            return jsonify({"error": "No image uploaded"}), 400
+            return jsonify({"error": "No file uploaded"}), 400
 
         file = request.files["image"]
 
@@ -1171,7 +1185,13 @@ def register_routes(app):
         file.save(filepath)
 
         try:
-            extracted_text = extract_text_from_image(filepath)
+            ext = filename.rsplit(".", 1)[1].lower()
+
+            if ext == "pdf":
+                extracted_text = extract_text_from_pdf(filepath)
+            else:
+                extracted_text = extract_text_from_image(filepath)
+
             skills = extract_skills_from_text(extracted_text)
 
             return jsonify({
@@ -1181,4 +1201,4 @@ def register_routes(app):
         except RuntimeError as e:
             return jsonify({"error": str(e)}), 503
         except Exception as e:
-            return jsonify({"error": f"Failed to parse image: {str(e)}"}), 500
+            return jsonify({"error": f"Failed to parse file: {str(e)}"}), 500

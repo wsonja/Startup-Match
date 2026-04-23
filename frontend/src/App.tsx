@@ -271,7 +271,7 @@ function App(): JSX.Element {
             <p className="eyebrow">Student to startup matching</p>
             <h1>Find early-stage startups that actually fit your skills</h1>
             <p className="intro-text">
-              Enter skills directly, and optionally add experience and interests for more targeted startup matches.
+              Enter skills directly, optionally add experience and interests, or upload a resume or document to parse your skills. (Allowed file types: PNG, JPG, JPEG, WEBP, PDF.)
             </p>
           </div>
 
@@ -289,7 +289,7 @@ function App(): JSX.Element {
             <input
               ref={fileInputRef}
               type="file"
-              accept="image/png,image/jpeg,image/jpg,image/webp"
+              accept="image/png,image/jpeg,image/jpg,image/webp,application/pdf"
               className="hidden-file-input"
               onChange={handleImageUpload}
             />
