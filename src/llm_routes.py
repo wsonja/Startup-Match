@@ -203,13 +203,13 @@ def generate_rag_explanation(startup, user_query):
         logger.warning(f"generate_rag_explanation could not create client: {e}")
         return ""
     
-    dimensions_text = "\n".join(
-        [
-            f"- {d.get('label', f\"Dimension {d.get('dimension')}\")}: "
-            f"{', '.join(t.get('term', '') for t in d.get('top_terms', []))}"
-            for d in startup.get("svd_dimensions", [])[:3]
-        ]
-    )
+    lines = []
+    for d in startup.get("svd_dimensions", [])[:3]:
+        label = d.get("label") or f"Dimension {d.get('dimension')}"
+        terms = ", ".join(t.get("term", "") for t in d.get("top_terms", []))
+        lines.append(f"- {label}: {terms}")
+    
+    dimensions_text = "\n".join(lines)
 
     context = (
         f"Student query: {user_query}\n\n"
