@@ -3,8 +3,8 @@ from dotenv import load_dotenv
 from flask import Flask
 from flask_cors import CORS
 
-from routes import register_routes, rank_companies, COMPANIES
-from llm_routes import register_chat_route, register_llm_test_route
+from routes import register_routes
+from llm_routes import register_llm_route, register_llm_test_route
 
 load_dotenv()
 
@@ -18,23 +18,8 @@ app = Flask(
 )
 CORS(app)
 
-
-def json_search(user_message):
-    return rank_companies(
-        skills_query="",
-        experience_query="",
-        interests_query=user_message,
-        companies=COMPANIES,
-        top_k=10,
-        location_filter=None,
-        stage_filter=None,
-        role_filter=None,
-    )
-
-
 register_routes(app)
-# register_chat_route(app, json_search)
-register_chat_route(app, lambda user_message: [])
+register_llm_route(app)
 register_llm_test_route(app)
 
 if __name__ == '__main__':

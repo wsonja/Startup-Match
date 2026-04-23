@@ -1,7 +1,7 @@
 import json
 import os
 import logging
-from flask import request, jsonify, Response, stream_with_context
+from flask import request, jsonify
 from infosci_spark_client import LLMClient
 
 logger = logging.getLogger(__name__)
@@ -123,9 +123,9 @@ def interpret_user_query(text, field_type="interests"):
         }
 
 
-def register_chat_route(app, json_search):
-    @app.route("/api/chat", methods=["POST"])
-    def chat():
+def register_llm_route(app):
+    @app.route("/api/llm", methods=["POST"])
+    def llm():
         data = request.get_json() or {}
         user_message = (data.get("message") or "").strip()
 
@@ -134,58 +134,34 @@ def register_chat_route(app, json_search):
 
         try:
             client = _get_client()
-        except RuntimeError as e:
-            return jsonify({"error": str(e)}), 500
-
-        startups = json_search(user_message)
-
-        context_text = "\n\n---\n\n".join(
-            (
-                f"Name: {s['name']}\n"
-                f"Stage: {s['stage']}\n"
-                f"YC Batch: {s.get('yc_batch')}\n"
-                f"Industry: {s['industry']}\n"
-                f"Location: {s.get('location')}\n"
-                f"Description: {s['description']}\n"
-                f"Tech Stack: {', '.join(s.get('tech_stack', []))}\n"
-                f"Roles: {', '.join(s.get('roles', []))}\n"
-                f"Match Score: {s['match_score']}\n"
-                f"Matched Terms: {', '.join(s.get('matched_terms', []))}\n"
-                f"Explanation: {s.get('rag_explanation', '')}"
-            )
-            for s in startups[:5]
-        ) or "No matching startups found."
+        except Exception as e:
+            return jsonify({
+                "ok": False,
+                "stage": "client_init",
+                "error": str(e),
+            }), 500
 
         messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are an assistant for StartupMatch. "
-                    "Given a student's skills and interests, recommend the most relevant startups "
-                    "using only the provided startup data. Explain why each startup matches."
-                ),
-            },
-            {
-                "role": "user",
-                "content": f"Startup data:\n\n{context_text}\n\nStudent request: {user_message}",
-            },
+            {"role": "system", "content": "Reply with exactly one short sentence."},
+            {"role": "user", "content": user_message},
         ]
 
-        def generate():
-            try:
-                for chunk in client.chat(messages, stream=True):
-                    if chunk.get("content"):
-                        yield f"data: {json.dumps({'content': chunk['content']})}\n\n"
-            except Exception as e:
-                logger.error(f"Streaming error: {e}")
-                yield f"data: {json.dumps({'error': 'Streaming error occurred'})}\n\n"
+        try:
+            response = client.chat(messages, stream=False)
+            text = _extract_text_from_response(response)
+            return jsonify({
+                "ok": True,
+                "stage": "chat_complete",
+                "response": text,
+            })
+        except Exception as e:
+            return jsonify({
+                "ok": False,
+                "stage": "chat_call",
+                "error": str(e),
+            }), 500
 
-        return Response(
-            stream_with_context(generate()),
-            mimetype="text/event-stream",
-            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        )
-    
+
 def register_llm_test_route(app):
     @app.route("/api/llm-test", methods=["GET"])
     def llm_test():
@@ -203,6 +179,7 @@ def register_llm_test_route(app):
             {"role": "user", "content": "Test"},
         ]
 
+
         try:
             response = client.chat(messages, stream=False)
             text = _extract_text_from_response(response)
@@ -217,3 +194,79 @@ def register_llm_test_route(app):
                 "stage": "chat_call",
                 "error": str(e),
             }), 500
+
+
+def generate_rag_explanation(startup, user_query):
+    try:
+        client = _get_client()
+    except Exception as e:
+        logger.warning(f"generate_rag_explanation could not create client: {e}")
+        return ""
+    
+    dimensions_text = "\n".join(
+        [
+            f"- {d.get('label', f'Dimension {d.get('dimension')}')}: "
+            f"{', '.join(t.get('term', '') for t in d.get('top_terms', []))}"
+            for d in startup.get("svd_dimensions", [])[:3]
+        ]
+    )
+
+    context = (
+        f"Student query: {user_query}\n\n"
+        f"Startup name: {startup.get('name', '')}\n"
+        f"Industry: {startup.get('industry', '')}\n"
+        f"Location: {startup.get('location', '')}\n"
+        f"Stage: {startup.get('stage', '')}\n"
+        f"Description: {startup.get('description', '')}\n"
+        f"Tech stack: {', '.join(startup.get('tech_stack', []))}\n"
+        f"Roles: {', '.join(startup.get('roles', []))}\n"
+        f"Keywords: {', '.join(startup.get('keywords', []))}\n"
+        f"Matched terms: {', '.join(startup.get('matched_terms', []))}\n"
+        f"Related terms: {', '.join(startup.get('svd_expansion_terms', []))}\n"
+        f"Match score: {startup.get('match_score', '')}\n"
+        f"Top dimensions:\n{dimensions_text}\n"
+    )
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You explain why a startup matches a student's query.\n"
+                "Use only the provided startup data.\n"
+                "Do not invent facts.\n"
+                "Return exactly one sentence.\n"
+                "The sentence must begin with exactly one of these three phrases:\n"
+                "1. This is an excellent fit because\n"
+                "2. This is a good fit because\n"
+                "3. This is a weak fit because\n\n"
+                "Choose the label using the evidence:\n"
+                "- 'excellent fit' if there are multiple strong direct matches across matched terms, roles, tech stack, or dimensions\n"
+                "- 'good fit' if there is some clear alignment but it is not especially strong or comprehensive\n"
+                "- 'weak fit' if the overlap is limited, indirect, or mostly based on broader related terms\n\n"
+                "Mention the most important specific reasons, such as role-title overlap, matched skills, tech stack, or company focus."
+            ),
+        },
+        {
+            "role": "user",
+            "content": context,
+        },
+    ]
+
+    try:
+        response = client.chat(messages, stream=False)
+        text = _extract_text_from_response(response).strip()
+
+        allowed_prefixes = (
+            "This is an excellent fit because",
+            "This is a good fit because",
+            "This is a weak fit because",
+        )
+
+        if not any(text.startswith(prefix) for prefix in allowed_prefixes):
+            logger.warning(f"generate_rag_explanation returned unexpected format: {text}")
+            return ""
+
+        return text
+    except Exception as e:
+        logger.warning(f"generate_rag_explanation failed for {startup.get('name')}: {e}")
+        return ""

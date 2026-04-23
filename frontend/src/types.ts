@@ -26,4 +26,5 @@ export interface Startup {
   matched_terms: string[]
   svd_expansion_terms: string[]
   svd_dimensions: SvdDimension[]
+  rag_explanation: string
 }

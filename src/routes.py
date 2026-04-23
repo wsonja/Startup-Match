@@ -8,6 +8,7 @@ from flask import send_from_directory, request, jsonify
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from werkzeug.utils import secure_filename
+from llm_routes import generate_rag_explanation
 
 easyocr = None
 EASYOCR_AVAILABLE = None
@@ -653,6 +654,7 @@ def rank_companies(
                 "match_score": 0,
                 "matched_terms": [],
                 "svd_expansion_terms": [],
+                "rag_explanation": "",
             })
         return results
 
@@ -724,6 +726,7 @@ def rank_companies(
                 "matched_terms": extract_matched_terms(combined_query, company),
                 "svd_expansion_terms": svd_expansion_terms,
                 "svd_dimensions": query_dimensions,
+                "rag_explanation": "",
                 "_debug": {
                     "skills_sim": round(float(skills_sims[global_i]), 4),
                     "roles_sim": round(float(roles_sims[global_i]), 4),
@@ -753,10 +756,35 @@ def rank_companies(
         print(f"   context_text:  {dbg['context_text']}")
         print()
 
-    for item in ranked:
+    # for item in ranked:
+    #     item.pop("_debug", None)
+
+    # return ranked[:top_k]
+
+    top_results = ranked[:top_k]
+
+    # user_query = " ".join(
+    #     part.strip()
+    #     for part in [skills_query, experience_query, interests_query]
+    #     if part and part.strip()
+    # )
+
+    # for i, item in enumerate(top_results):
+    #     if i < 10:
+    #         try:
+    #             item["rag_explanation"] = generate_rag_explanation(item, user_query)
+    #         except Exception:
+    #             item["rag_explanation"] = ""
+    #     else:
+    #         item["rag_explanation"] = ""
+
+    #     item.pop("_debug", None)
+
+    for item in top_results:
         item.pop("_debug", None)
 
-    return ranked[:top_k]
+
+    return top_results
 
 
 def get_easyocr_reader():
@@ -903,6 +931,22 @@ def register_routes(app):
             )
         )
 
+    @app.route("/api/rag-explanation", methods=["POST"])
+    def rag_explanation():
+        data = request.get_json() or {}
+        startup = data.get("startup")
+        user_query = (data.get("query") or "").strip()
+
+        if not startup:
+            return jsonify({"error": "Missing startup"}), 400
+        
+
+        try:
+            explanation = generate_rag_explanation(startup, user_query)
+            return jsonify({"explanation": explanation})
+        except Exception:
+            return jsonify({"explanation": ""})
+        
     @app.route("/api/parse-skills-image", methods=["POST"])
     def parse_skills_image():
         if "image" not in request.files:
