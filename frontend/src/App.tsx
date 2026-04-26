@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import './App.css'
-import { Startup } from './types'
 import logo from './assets/logo-with-slogan.png'
 import logoMark from './assets/logo-mark.png'
+import { RagSearchResponse, Startup } from './types'
 
 function App(): JSX.Element {
   const [skills, setSkills] = useState<string>('')
@@ -26,6 +26,11 @@ function App(): JSX.Element {
   const [ragLoading, setRagLoading] = useState<Record<string, boolean>>({})
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [searchLoading, setSearchLoading] = useState<boolean>(false)
+  const [ragOriginalQuery, setRagOriginalQuery] = useState<string>('')
+  const [ragModifiedQuery, setRagModifiedQuery] = useState<string>('')
+  const [ragRetrievalKeywords, setRagRetrievalKeywords] = useState<string[]>([])
+  const [ragAnswer, setRagAnswer] = useState<string>('')
+  const [showRagDetails, setShowRagDetails] = useState<boolean>(false)
 
   useEffect(() => {
     fetch('/api/locations')
@@ -140,6 +145,10 @@ function App(): JSX.Element {
       setHasSearched(false)
       setRagExplanations({})
       setRagLoading({})
+      setRagOriginalQuery('')
+      setRagModifiedQuery('')
+      setRagRetrievalKeywords([])
+      setRagAnswer('')
       return
     }
 
@@ -152,14 +161,30 @@ function App(): JSX.Element {
     if (roleFilter.trim()) params.append('role', roleFilter)
 
     setSearchLoading(true)
+    const fullQuery = [s, experience, interests].filter(Boolean).join(' ').trim()
 
     try {
-      const response = await fetch(`/api/startups?${params.toString()}`)
-      const data: Startup[] = await response.json()
+      const response = await fetch('/api/rag-search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query: fullQuery,
+          location: locationFilter,
+          stage: stageFilter,
+          role: roleFilter,
+        }),
+      })
+
+      const data: RagSearchResponse = await response.json()
+
+      setRagOriginalQuery(data.original_query || fullQuery)
+      setRagModifiedQuery(data.modified_query || fullQuery)
+      setRagRetrievalKeywords(data.retrieval_keywords || [])
+      setRagAnswer(data.answer || '')
 
       setRagExplanations({})
       setRagLoading({})
-      setStartups(data)
+      setStartups(data.retrieved_results || [])
       setHasSearched(true)
     } finally {
       setSearchLoading(false)
@@ -396,6 +421,59 @@ function App(): JSX.Element {
             </p>
           )}
         </section>
+        
+        {hasSearched && ragModifiedQuery && (
+          <section className="glass-card rag-pipeline-card">
+            <button
+              type="button"
+              className="rag-header-button"
+              onClick={() => setShowRagDetails((prev) => !prev)}
+            >
+              <div>
+                <p className="eyebrow">RAG pipeline</p>
+                <h2>Retrieval-Augmented Search</h2>
+              </div>
+
+              <span className={`rag-arrow ${showRagDetails ? 'open' : ''}`}>
+                ↓
+              </span>
+            </button>
+
+            {showRagDetails && (
+              <div className="rag-details">
+                <div className="rag-step">
+                  <strong>1. Original user input</strong>
+                  <p>{ragOriginalQuery}</p>
+                </div>
+
+                <div className="rag-step">
+                  <strong>2. LLM-modified query sent to the IR system</strong>
+                  <p>{ragModifiedQuery}</p>
+                </div>
+
+                {ragRetrievalKeywords.length > 0 && (
+                  <div className="rag-step">
+                    <strong>3. Retrieval keywords</strong>
+                    <div className="tag-row">
+                      {ragRetrievalKeywords.map((keyword) => (
+                        <span key={keyword} className="soft-tag highlight-tag">
+                          {keyword}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {ragAnswer && (
+                  <div className="rag-step">
+                    <strong>4. LLM answer using retrieved IR results</strong>
+                    <p>{ragAnswer}</p>
+                  </div>
+                )}
+              </div>
+            )}
+          </section>
+        )}
 
         <section className="results-grid">
           {!hasSearched && (

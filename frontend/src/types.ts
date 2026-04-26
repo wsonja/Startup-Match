@@ -29,3 +29,11 @@ export interface Startup {
   svd_dimensions: SvdDimension[]
   rag_explanation: string
 }
+
+export interface RagSearchResponse {
+  original_query: string
+  modified_query: string
+  retrieval_keywords: string[]
+  retrieved_results: Startup[]
+  answer: string
+}

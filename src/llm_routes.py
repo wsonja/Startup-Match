@@ -273,3 +273,129 @@ def generate_rag_explanation(startup, user_query):
     except Exception as e:
         logger.warning(f"generate_rag_explanation failed for {startup.get('name')}: {e}")
         return ""
+def create_rag_retrieval_query(user_query):
+    user_query = (user_query or "").strip()
+
+    if not user_query:
+        return {
+            "modified_query": "",
+            "keywords": []
+        }
+
+    try:
+        client = _get_client()
+    except Exception as e:
+        logger.warning(f"create_rag_retrieval_query could not create client: {e}")
+        return {
+            "modified_query": user_query,
+            "keywords": [user_query]
+        }
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You rewrite a student's natural language startup matching request "
+                "into a concise retrieval query for an information retrieval system.\n"
+                "Return valid JSON only. No markdown. No explanation.\n"
+                "Schema:\n"
+                "{\n"
+                '  "modified_query": string,\n'
+                '  "keywords": string[]\n'
+                "}\n"
+                "Rules:\n"
+                "- Keep skills, tools, roles, industries, interests, and locations.\n"
+                "- Remove filler words and personal phrasing.\n"
+                "- Add closely related retrieval terms only when clearly useful.\n"
+                "- Do not invent facts about the user.\n"
+                "- The modified_query should be one searchable phrase."
+            ),
+        },
+        {
+            "role": "user",
+            "content": f"Original user query: {user_query}",
+        },
+    ]
+
+    try:
+        response = client.chat(messages, stream=False)
+        raw = _extract_text_from_response(response)
+        parsed = json.loads(raw)
+
+        modified_query = str(parsed.get("modified_query", "")).strip()
+        keywords = parsed.get("keywords", [])
+
+        if not isinstance(keywords, list):
+            keywords = []
+
+        keywords = [str(k).strip() for k in keywords if str(k).strip()]
+
+        return {
+            "modified_query": modified_query or user_query,
+            "keywords": keywords
+        }
+
+    except Exception as e:
+        logger.warning(f"create_rag_retrieval_query failed: {e}")
+        return {
+            "modified_query": user_query,
+            "keywords": [user_query]
+        }
+
+
+def generate_rag_answer(original_query, modified_query, retrieved_results):
+    try:
+        client = _get_client()
+    except Exception as e:
+        logger.warning(f"generate_rag_answer could not create client: {e}")
+        return ""
+
+    compact_results = []
+
+    for idx, startup in enumerate((retrieved_results or [])[:8], start=1):
+        compact_results.append(
+            {
+                "rank": idx,
+                "name": startup.get("name", ""),
+                "match_score": startup.get("match_score", ""),
+                "industry": startup.get("industry", ""),
+                "location": startup.get("location", ""),
+                "stage": startup.get("stage", ""),
+                "description": startup.get("description", ""),
+                "matched_terms": startup.get("matched_terms", []),
+                "related_terms_used": startup.get("related_terms_used", []),
+                "roles": startup.get("roles", [])[:8],
+                "tech_stack": startup.get("tech_stack", [])[:12],
+            }
+        )
+
+    context = json.dumps(compact_results, indent=2)
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You answer a student's startup matching query using only the retrieved IR results.\n"
+                "Do not invent companies or facts.\n"
+                "Mention that the answer is based on the retrieved results.\n"
+                "Keep the answer concise: 4 to 6 sentences.\n"
+                "Reference specific company names and matching evidence."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Original user query:\n{original_query}\n\n"
+                f"Modified retrieval query used by the IR system:\n{modified_query}\n\n"
+                f"Retrieved IR results:\n{context}\n\n"
+                "Now answer the user using the retrieved results."
+            ),
+        },
+    ]
+
+    try:
+        response = client.chat(messages, stream=False)
+        return _extract_text_from_response(response).strip()
+    except Exception as e:
+        logger.warning(f"generate_rag_answer failed: {e}")
+        return ""

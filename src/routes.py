@@ -8,7 +8,12 @@ from flask import send_from_directory, request, jsonify
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from werkzeug.utils import secure_filename
-from llm_routes import generate_rag_explanation, interpret_user_query
+from llm_routes import (
+    generate_rag_explanation,
+    interpret_user_query,
+    create_rag_retrieval_query,
+    generate_rag_answer,
+)
 
 easyocr = None
 EASYOCR_AVAILABLE = None
@@ -1130,6 +1135,51 @@ def register_routes(app):
         ordered = [s for s in STAGE_ORDER if s in counts]
         remaining = sorted((s for s in counts if s not in STAGE_ORDER), key=lambda x: -counts[x])
         return jsonify(ordered + remaining)
+    
+    @app.route("/api/rag-search", methods=["POST"])
+    def rag_search():
+        data = request.get_json() or {}
+
+        original_query = (data.get("query") or "").strip()
+        location = (data.get("location") or "").strip()
+        stage = (data.get("stage") or "").strip()
+        role = (data.get("role") or "").strip()
+
+        if not original_query and not location and not stage and not role:
+            return jsonify({
+                "original_query": "",
+                "modified_query": "",
+                "retrieved_results": [],
+                "answer": ""
+            })
+
+        rag_query_payload = create_rag_retrieval_query(original_query)
+        modified_query = rag_query_payload.get("modified_query", original_query)
+
+        retrieved_results = rank_companies(
+            skills_query=modified_query,
+            experience_query="",
+            interests_query=modified_query,
+            companies=COMPANIES,
+            top_k=20,
+            location_filter=location or None,
+            stage_filter=stage or None,
+            role_filter=role or None,
+        )
+
+        answer = generate_rag_answer(
+            original_query=original_query,
+            modified_query=modified_query,
+            retrieved_results=retrieved_results,
+        )
+
+        return jsonify({
+            "original_query": original_query,
+            "modified_query": modified_query,
+            "retrieval_keywords": rag_query_payload.get("keywords", []),
+            "retrieved_results": retrieved_results,
+            "answer": answer,
+        })
 
     @app.route("/api/startups")
     def startups_search():
