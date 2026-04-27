@@ -449,24 +449,28 @@ function App(): JSX.Element {
                 <div className="rag-step">
                   <strong>2. LLM-modified query sent to the IR system</strong>
                   <p>{ragModifiedQuery}</p>
+                  {(() => {
+                    const llmTerms = ragRetrievalKeywords
+                    const svdTerms = (startups[0]?.svd_expansion_terms || []).filter(
+                      (t) => !llmTerms.includes(t)
+                    )
+                    const allTerms = [...llmTerms, ...svdTerms]
+                    return allTerms.length > 0 ? (
+                      <div className="tag-row" style={{ marginTop: "6px" }}>
+                        {llmTerms.map((keyword) => (
+                          <span key={keyword} className="soft-tag highlight-tag">{keyword}</span>
+                        ))}
+                        {svdTerms.map((term) => (
+                          <span key={term} className="soft-tag" style={{ opacity: 0.75 }}>{term}</span>
+                        ))}
+                      </div>
+                    ) : null
+                  })()}
                 </div>
-
-                {ragRetrievalKeywords.length > 0 && (
-                  <div className="rag-step">
-                    <strong>3. Retrieval keywords</strong>
-                    <div className="tag-row">
-                      {ragRetrievalKeywords.map((keyword) => (
-                        <span key={keyword} className="soft-tag highlight-tag">
-                          {keyword}
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                )}
 
                 {ragAnswer && (
                   <div className="rag-step">
-                    <strong>4. LLM answer using retrieved IR results</strong>
+                    <strong>3. LLM answer using retrieved IR results</strong>
                     <p>{ragAnswer}</p>
                   </div>
                 )}
@@ -539,6 +543,17 @@ function App(): JSX.Element {
                   ))}
                 </div>
               </div>
+
+              {startup.svd_expansion_terms && startup.svd_expansion_terms.length > 0 && (
+                <div className="info-block">
+                  <p><strong>Related Skills Used</strong></p>
+                  <div className="tag-row">
+                    {startup.svd_expansion_terms.map((item) => (
+                      <span key={item} className="soft-tag" style={{ opacity: 0.75 }}>{item}</span>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {startup.related_terms_used && startup.related_terms_used.length > 0 && (
                 <div className="info-block">

@@ -2,6 +2,7 @@ import difflib
 import json
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor
 
 import joblib
 from flask import send_from_directory, request, jsonify
@@ -379,18 +380,24 @@ def expand_skills_query(skills_query, svd_space):
         return "", []
 
     corrected_query = fuzzy_correct_query(skills_query.strip(), svd_space)
-
-    if corrected_query.strip().lower() in SHORT_ACRONYMS:
-        return corrected_query, []
-
     normalized_query = normalize_query_for_svd(corrected_query)
-    expansion_terms = get_svd_expansion_terms(normalized_query, svd_space)
 
     pieces = []
-    for part in [corrected_query, normalized_query] + expansion_terms:
+    for part in [corrected_query, normalized_query]:
         part = (part or "").strip()
         if part and part not in pieces:
             pieces.append(part)
+
+    # For bare short acronyms, alias expansion above is sufficient; skip SVD (too noisy)
+    if corrected_query.strip().lower() in SHORT_ACRONYMS:
+        return " ".join(pieces), []
+
+    expansion_terms = get_svd_expansion_terms(normalized_query, svd_space)
+
+    for term in expansion_terms:
+        term = (term or "").strip()
+        if term and term not in pieces:
+            pieces.append(term)
 
     return " ".join(pieces), expansion_terms
 
@@ -776,8 +783,11 @@ def rank_companies(
 
     original_count = len(companies)
 
-    experience_payload = build_query_field_payload(experience_query, "experience")
-    interests_payload = build_query_field_payload(interests_query, "interests")
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        exp_future = pool.submit(build_query_field_payload, experience_query, "experience")
+        int_future = pool.submit(build_query_field_payload, interests_query, "interests")
+        experience_payload = exp_future.result()
+        interests_payload = int_future.result()
 
     processed_experience_query = experience_payload["search_text"]
     processed_interests_query = interests_payload["search_text"]

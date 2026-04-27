@@ -1,10 +1,28 @@
 import json
 import os
 import logging
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+from functools import lru_cache
 from flask import request, jsonify
 from infosci_spark_client import LLMClient
 
 logger = logging.getLogger(__name__)
+
+_LLM_TIMEOUT = 8  # seconds before a non-streaming LLM call is abandoned
+_executor = ThreadPoolExecutor(max_workers=4)
+
+
+def _timed_chat(client, messages):
+    """Run client.chat in a thread so we can enforce a hard timeout."""
+    future = _executor.submit(client.chat, messages, False)
+    try:
+        return future.result(timeout=_LLM_TIMEOUT)
+    except FuturesTimeout:
+        logger.warning("LLM call timed out after %ds", _LLM_TIMEOUT)
+        return None
+    except Exception as e:
+        logger.warning("LLM call failed: %s", e)
+        return None
 
 
 def _get_client():
@@ -44,11 +62,8 @@ def _extract_text_from_response(response):
     return str(response).strip()
 
 
+@lru_cache(maxsize=512)
 def interpret_user_query(text, field_type="interests"):
-    """
-    Use the LLM only to normalize messy free-text experience/interests
-    into a cleaner retrieval query.
-    """
     text = (text or "").strip()
     if not text:
         return {
@@ -65,39 +80,58 @@ def interpret_user_query(text, field_type="interests"):
             "keywords": [text]
         }
 
+    field_instructions = {
+        "skills": (
+            "- Expand abbreviations and acronyms to their full technical terms "
+            "(e.g. 'ai' → 'artificial intelligence machine learning', 'ml' → 'machine learning deep learning', "
+            "'nlp' → 'natural language processing', 'cv' → 'computer vision').\n"
+            "- Add 3-5 closely related skills or technologies that employers often list alongside the input.\n"
+            "- Keep the original term plus all expanded and related terms.\n"
+            "- Focus on concrete technologies, frameworks, and tools.\n"
+        ),
+        "experience": (
+            "- Focus on job titles, responsibilities, industries, and seniority levels.\n"
+            "- Convert free-text descriptions into role-like noun phrases "
+            "(e.g. 'worked on payments' → 'payments engineer fintech backend').\n"
+            "- Include domain synonyms a recruiter would search for.\n"
+        ),
+        "interests": (
+            "- Convert personal phrasing into industry/sector terms "
+            "(e.g. 'I love helping people eat healthy' → 'food health wellness consumer').\n"
+            "- Include adjacent startup verticals if strongly implied.\n"
+            "- Keep 3-6 distinct thematic keywords.\n"
+        ),
+    }
+
+    specific = field_instructions.get(field_type, field_instructions["interests"])
+
     messages = [
         {
             "role": "system",
             "content": (
-                "You normalize startup-search inputs.\n"
-                "Return valid JSON only.\n"
-                "No markdown, no explanation, no extra text.\n"
-                "The JSON schema is:\n"
-                "{\n"
-                '  "normalized_text": string,\n'
-                '  "keywords": string[]\n'
-                "}\n"
-                "Rules:\n"
+                "You normalize startup-search inputs into concise retrieval queries.\n"
+                "Return valid JSON only. No markdown, no explanation, no extra text.\n"
+                "Schema: { \"normalized_text\": string, \"keywords\": string[] }\n\n"
+                "General rules:\n"
                 "- Correct spelling mistakes.\n"
-                "- Remove filler words and stopwords.\n"
-                "- Remove pronouns, helper verbs, and generic action words unless they are essential domain terms.\n"
-                "- Do not include words like: I, worked, on, in, with, love, interested, using, built, doing.\n"
-                "- Keep only the core user intent.\n"
-                "- keywords should be 3 to 6 concise search terms.\n"
-                "- For interests, include adjacent concepts if strongly relevant.\n"
-                "- For experience, focus on skills, tools, responsibilities, and role-like terms.\n"
-                "- Prefer noun phrases and technical phrases over sentences.\n"
-                "- Do not invent biography details.\n"
+                "- Strip filler words: I, me, my, worked, on, in, with, love, like, interested, using, built, doing.\n"
+                "- Output noun phrases and technical terms only — no full sentences.\n"
+                "- Do not invent facts about the user.\n"
+                "- keywords: 3 to 6 concise, searchable terms.\n\n"
+                f"Field-specific rules for '{field_type}':\n{specific}"
             ),
         },
         {
             "role": "user",
-            "content": f"Field type: {field_type}\nUser input: {text}",
+            "content": f"User input: {text}",
         },
     ]
 
+    response = _timed_chat(client, messages)
+    if response is None:
+        return {"normalized_text": text, "keywords": [text]}
+
     try:
-        response = client.chat(messages, stream=False)
         raw = _extract_text_from_response(response)
         parsed = json.loads(raw)
 
@@ -107,12 +141,7 @@ def interpret_user_query(text, field_type="interests"):
         if not isinstance(keywords, list):
             keywords = []
 
-        cleaned_keywords = []
-        for kw in keywords:
-            kw = str(kw).strip()
-            if kw and kw not in cleaned_keywords:
-                cleaned_keywords.append(kw)
-        logger.warning(f"normtext {normalized_text}, keywords {cleaned_keywords}")
+        cleaned_keywords = [str(kw).strip() for kw in keywords if str(kw).strip()]
         return {
             "normalized_text": normalized_text,
             "keywords": cleaned_keywords
@@ -120,10 +149,7 @@ def interpret_user_query(text, field_type="interests"):
 
     except Exception as e:
         logger.warning(f"interpret_user_query failed for {field_type}: {e}")
-        return {
-            "normalized_text": text,
-            "keywords": [text]
-        }
+        return {"normalized_text": text, "keywords": [text]}
 
 
 def register_llm_route(app):
@@ -149,20 +175,11 @@ def register_llm_route(app):
             {"role": "user", "content": user_message},
         ]
 
-        try:
-            response = client.chat(messages, stream=False)
-            text = _extract_text_from_response(response)
-            return jsonify({
-                "ok": True,
-                "stage": "chat_complete",
-                "response": text,
-            })
-        except Exception as e:
-            return jsonify({
-                "ok": False,
-                "stage": "chat_call",
-                "error": str(e),
-            }), 500
+        response = _timed_chat(client, messages)
+        if response is None:
+            return jsonify({"ok": False, "stage": "chat_call", "error": "LLM timeout"}), 504
+        text = _extract_text_from_response(response)
+        return jsonify({"ok": True, "stage": "chat_complete", "response": text})
 
 
 def register_llm_test_route(app):
@@ -171,32 +188,18 @@ def register_llm_test_route(app):
         try:
             client = _get_client()
         except Exception as e:
-            return jsonify({
-                "ok": False,
-                "stage": "client_init",
-                "error": str(e),
-            }), 500
+            return jsonify({"ok": False, "stage": "client_init", "error": str(e)}), 500
 
         messages = [
             {"role": "system", "content": "Reply with exactly: OK"},
             {"role": "user", "content": "Test"},
         ]
 
-
-        try:
-            response = client.chat(messages, stream=False)
-            text = _extract_text_from_response(response)
-            return jsonify({
-                "ok": True,
-                "stage": "chat_complete",
-                "response": text,
-            })
-        except Exception as e:
-            return jsonify({
-                "ok": False,
-                "stage": "chat_call",
-                "error": str(e),
-            }), 500
+        response = _timed_chat(client, messages)
+        if response is None:
+            return jsonify({"ok": False, "stage": "chat_call", "error": "LLM timeout"}), 504
+        text = _extract_text_from_response(response)
+        return jsonify({"ok": True, "stage": "chat_complete", "response": text})
 
 
 def generate_rag_explanation(startup, user_query):
@@ -234,19 +237,20 @@ def generate_rag_explanation(startup, user_query):
         {
             "role": "system",
             "content": (
-                "You explain why a startup matches a student's query.\n"
-                "Use only the provided startup data.\n"
+                "You explain why a startup matches a student's query. Use only the provided data.\n"
                 "Do not invent facts.\n"
-                "Return exactly one sentence.\n"
-                "The sentence must begin with exactly one of these three phrases:\n"
+                "Return exactly one sentence (max 40 words).\n"
+                "Begin with exactly one of:\n"
                 "1. This is an excellent fit because\n"
                 "2. This is a good fit because\n"
                 "3. This is a weak fit because\n\n"
-                "Choose the label using the evidence:\n"
-                "- 'excellent fit' if there are multiple strong direct matches across matched terms, roles, tech stack, or dimensions\n"
-                "- 'good fit' if there is some clear alignment but it is not especially strong or comprehensive\n"
-                "- 'weak fit' if the overlap is limited, indirect, or mostly based on broader related terms\n\n"
-                "Mention the most important specific reasons, such as role-title overlap, matched skills, tech stack, or company focus."
+                "Fit level:\n"
+                "- 'excellent' → multiple direct matches: specific skills, matching role titles, and relevant tech stack\n"
+                "- 'good' → clear alignment in at least one area (skills OR roles OR sector)\n"
+                "- 'weak' → only indirect or broad topic overlap\n\n"
+                "Your sentence MUST cite specific evidence: name actual matched skills, role titles, or technologies — "
+                "never say only 'aligns with your interests' without specifics.\n"
+                "Example good output: 'This is a good fit because they use PyTorch and TensorFlow and hire machine learning engineers.'"
             ),
         },
         {
@@ -255,20 +259,20 @@ def generate_rag_explanation(startup, user_query):
         },
     ]
 
-    try:
-        response = client.chat(messages, stream=False)
-        text = _extract_text_from_response(response).strip()
+    response = _timed_chat(client, messages)
+    if response is None:
+        return ""
 
+    try:
+        text = _extract_text_from_response(response).strip()
         allowed_prefixes = (
             "This is an excellent fit because",
             "This is a good fit because",
             "This is a weak fit because",
         )
-
         if not any(text.startswith(prefix) for prefix in allowed_prefixes):
-            logger.warning(f"generate_rag_explanation returned unexpected format: {text}")
+            logger.warning(f"generate_rag_explanation unexpected format: {text}")
             return ""
-
         return text
     except Exception as e:
         logger.warning(f"generate_rag_explanation failed for {startup.get('name')}: {e}")
@@ -317,30 +321,19 @@ def create_rag_retrieval_query(user_query):
         },
     ]
 
+    response = _timed_chat(client, messages)
+    if response is None:
+        return {"modified_query": user_query, "keywords": [user_query]}
+
     try:
-        response = client.chat(messages, stream=False)
         raw = _extract_text_from_response(response)
         parsed = json.loads(raw)
-
         modified_query = str(parsed.get("modified_query", "")).strip()
-        keywords = parsed.get("keywords", [])
-
-        if not isinstance(keywords, list):
-            keywords = []
-
-        keywords = [str(k).strip() for k in keywords if str(k).strip()]
-
-        return {
-            "modified_query": modified_query or user_query,
-            "keywords": keywords
-        }
-
+        keywords = [str(k).strip() for k in parsed.get("keywords", []) if str(k).strip()]
+        return {"modified_query": modified_query or user_query, "keywords": keywords}
     except Exception as e:
         logger.warning(f"create_rag_retrieval_query failed: {e}")
-        return {
-            "modified_query": user_query,
-            "keywords": [user_query]
-        }
+        return {"modified_query": user_query, "keywords": [user_query]}
 
 
 def generate_rag_answer(original_query, modified_query, retrieved_results):
@@ -375,26 +368,34 @@ def generate_rag_answer(original_query, modified_query, retrieved_results):
         {
             "role": "system",
             "content": (
-                "You answer a student's startup matching query using only the retrieved IR results.\n"
-                "Do not invent companies or facts.\n"
-                "Mention that the answer is based on the retrieved results.\n"
-                "Keep the answer concise: 4 to 6 sentences.\n"
-                "Reference specific company names and matching evidence."
+                "You are a startup career advisor helping a student find the right startup to join.\n"
+                "Answer using ONLY the retrieved results below — do not invent companies or facts.\n"
+                "Tone: friendly, direct, actionable.\n"
+                "Length: 3 to 5 sentences.\n"
+                "Structure your answer as:\n"
+                "1. One sentence naming the top 1-2 matches and why they stand out.\n"
+                "2. One or two sentences on what makes those companies a good fit "
+                "(cite specific skills, roles, or tech stack from the data).\n"
+                "3. One sentence with a practical next step "
+                "(e.g. 'Check out their careers page' or 'Look at their open roles in X').\n"
+                "Do not use bullet points. Do not start with 'Based on the retrieved results'."
             ),
         },
         {
             "role": "user",
             "content": (
-                f"Original user query:\n{original_query}\n\n"
-                f"Modified retrieval query used by the IR system:\n{modified_query}\n\n"
-                f"Retrieved IR results:\n{context}\n\n"
-                "Now answer the user using the retrieved results."
+                f"Student query: {original_query}\n"
+                f"Search terms used: {modified_query}\n\n"
+                f"Retrieved startups:\n{context}\n\n"
+                "Give the student your best recommendation."
             ),
         },
     ]
 
+    response = _timed_chat(client, messages)
+    if response is None:
+        return ""
     try:
-        response = client.chat(messages, stream=False)
         return _extract_text_from_response(response).strip()
     except Exception as e:
         logger.warning(f"generate_rag_answer failed: {e}")
